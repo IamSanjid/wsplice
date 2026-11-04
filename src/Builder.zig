@@ -141,7 +141,9 @@ pub fn addExport(
 
 /// Sets `function`'s body. An `.appended` ordinal must come from `addFunction`
 /// (`UnknownFunction`), and a function takes exactly one body (`DuplicateBody`). A function the
-/// plan imports has no body (`ImportedFunction`). The body borrows its bytes.
+/// plan imports has no body (`ImportedFunction`). The body borrows its bytes, and any rewriter
+/// context it carries, until `emit` returns: a context local to a loop iteration is overwritten
+/// before `emit`, even though `setBody` succeeds. Keep it in an arena or storage outside the loop.
 pub fn setBody(
     self: *Builder,
     allocator: Allocator,

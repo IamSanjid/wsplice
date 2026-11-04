@@ -120,8 +120,9 @@ pub const Owner = struct {
 ///     pub fn rewrite(self: *const T, body: operators.BodyIter, out: *Out) EncodeError!void
 ///
 /// and `from(&value)` stores one context pointer and one function pointer. The context must outlive
-/// `emit`, and the callback must be deterministic: a frame is measured and then written, and emit
-/// runs both twice.
+/// `emit` and stay at a stable address: a value local to a loop iteration is overwritten by the
+/// next iteration before `emit`. Allocate it in an arena or keep it in outer storage. The callback
+/// must be deterministic: a frame is measured and then written, and emit runs both twice.
 pub const Rewriter = struct {
     context: *const anyopaque,
     function: *const fn (

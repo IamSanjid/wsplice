@@ -20,7 +20,7 @@ one thing, read `docs/ARCHITECTURE.md`, then run the tests below and check `git 
 
 1. Read `docs/ARCHITECTURE.md`, then this file.
 2. `git status --short` from the repository root.
-3. Run both test commands below; **488/488** is the expected baseline.
+3. Run both test commands below; **487/487** is the expected baseline.
 4. Next is 13b (element segments / `addElementSegment`), deferred until the caller is ready; 11 is
    done.
 
@@ -29,18 +29,18 @@ one thing, read `docs/ARCHITECTURE.md`, then run the tests below and check `git 
 From the repository root:
 
 ```
-zig build test --summary all -Dtarget=x86_64-windows -Doptimize=debug
-zig build test --summary all -Dtarget=x86_64-windows -Doptimize=safe
+zig build test --summary all -Doptimize=debug
+zig build test --summary all -Doptimize=safe
 zig fmt src
 zig fmt --check src
 ```
 
 - `zig` is found on `PATH` (Zig 0.18 development build).
-- `-Dtarget` is required for host tests: `build.zig` defaults the target to wasm64, and the test
-  binary has to run on this machine. Do not add a default target to `build.zig`.
+- The target defaults to the host, so no `-Dtarget` is needed for normal tests. Pass `-Dtarget`
+  only for a cross build.
 - Wabt tools are found on `PATH`: `wasm-validate`, `wasm-objdump`, `wat2wasm`
   (`--enable-threads` for atomics).
-- Last green run: **488/488** in both modes; the 100-column guard in `src/tests/style.zig` covers
+- Last green run: **487/487** in both modes; the 100-column guard in `src/tests/style.zig` covers
   37 production files.
 
 ## Conventions
@@ -174,6 +174,12 @@ cleanup.
 - PowerShell `-replace` is case-insensitive and has corrupted identifiers here; use `-creplace`.
 - A rewriter's `rewrite` method must be `pub`: `Rewriter.from` instantiates its shim inside
   `Body.zig`, which is another file.
+- A rewriter context is borrowed until `emit` and must have a stable address. A `Transform`
+  declared inside a loop iteration is overwritten by the next iteration while `Rewriter` still
+  holds its address; `setBody` succeeds, then `emit` reads stale fields. This often appears as an
+  unrelated local-index error in another function, or as output that validates but behaves wrong.
+  Allocate per-function contexts with an arena or keep them in an outer array. `arena.create` is
+  the usual fix.
 - `Body.Input.body` is a `Cursor` whose `bytes` are the module bytes, so `Op.at`/`Op.end` slice
   correctly in `Out.keep`. A cursor over a separate expression buffer only works when that buffer is
   the module.

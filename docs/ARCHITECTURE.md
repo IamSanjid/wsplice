@@ -241,10 +241,12 @@ the precomputed bound. A rewriter only needs `write`/`keep`; the rest is encoder
 indirect call per callback, and the callback is a direct call inside that shim. The callback is
 `pub` because the shim lives in `Body.zig`.
 
-The context is `*const` and must outlive `emit`; each run gets a fresh `Out` and a fresh iterator,
-so the callback has to be deterministic. Validation (depth back to zero, `br` in reach) is deferred.
-The local bound lives in `Out.write`; `Out.keep` copies bytes, so kept instructions are never
-re-checked.
+The context is `*const` and must outlive `emit` at a stable address; each run gets a fresh `Out`
+and a fresh iterator, so the callback has to be deterministic. In particular, a context declared
+inside a loop iteration is overwritten by the next iteration before `emit`, even though
+`Builder.setBody` accepts the pointer. Allocate it in an arena or an outer array. Validation (depth
+back to zero, `br` in reach) is deferred. The local bound lives in `Out.write`; `Out.keep` copies
+bytes, so kept instructions are never re-checked.
 
 ### Copying
 
