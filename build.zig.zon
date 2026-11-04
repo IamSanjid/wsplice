@@ -1,0 +1,8 @@
+.{
+    .name = .wsplice,
+    .version = "0.0.1",
+    .dependencies = .{},
+    .minimum_zig_version = "0.18.0-dev.2818+4812a98ce",
+    .paths = .{""},
+    .fingerprint = 0x8539bbdcfcbff17d,
+}

@@ -1,0 +1,13 @@
+(module
+  (type (func (param i32) (result i32)))
+  (import "env" "log" (func $log (type 0)))
+  (import "env" "table" (table 2 10 funcref))
+  (import "env" "memory" (memory 1 4))
+  (import "env" "counter" (global $counter (mut i32)))
+  (import "env" "limit" (global i32))
+  (func $f (type 0) local.get 0)
+  (func $g (type 0) local.get 0 call $log)
+  (global $own i32 (i32.const 7))
+  (export "f" (func $f))
+  (export "g" (func $g))
+  (export "own" (global $own)))
