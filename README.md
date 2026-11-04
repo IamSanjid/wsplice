@@ -1,5 +1,21 @@
 # wsplice
 
+Usage:
+```sh
+zig fetch --save git+https://github.com/zigtools/zls.git
+```
+
+```zig
+const wsplice_dep = b.dependency("wsplice", .{
+    .optimize = optimize,
+});
+const wsplice = wsplice_dep.module("wsplice");
+//  exe/lib.root_module
+//  .imports = &.{
+//      .{ .name = "wsplice", .module = wsplice },
+//  },
+```
+
 Example:
 
 ```zig
