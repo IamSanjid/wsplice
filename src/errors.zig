@@ -45,12 +45,14 @@ pub const PayloadError = error{
     UnsupportedFeature,
 };
 
-/// A body or table edit names a target that cannot be edited: it is imported, or the plan already
-/// names it. The builder sees symbolic targets; the encoders see input indices. Both return this
-/// set, so a caller handles one vocabulary. Error sets compose, so this is no runtime wrapper.
+/// A body, table, or custom-section edit names a target that cannot be edited: it is imported, or
+/// the plan already names it. The builder sees symbolic targets; the encoders see input indices.
+/// Both return this set, so a caller handles one vocabulary. Error sets compose, so this is no
+/// runtime wrapper.
 pub const EditTargetError = error{
     DuplicateBody, // two bodies for one function
     DuplicateTable, // two replacements for one table
+    DuplicateCustomSection, // two replacements for one custom-section selector
     ImportedFunction, // imported functions have no code entry
     ImportedTable, // imported tables have no table-section entry
 };
@@ -59,6 +61,7 @@ pub const EditError = error{
     InvalidExportName,
     IndexOutOfRange,
     NoInputBody, // `.keep` locals on a body with no input body
+    UnknownCustomSection, // a replacement selector matched no input custom section
 } || EditTargetError;
 pub const EncodeError = Io.Writer.Error || error{Overflow} || PayloadError || EditError;
 pub const BuilderError = error{

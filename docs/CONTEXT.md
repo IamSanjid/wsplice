@@ -20,7 +20,7 @@ one thing, read `docs/ARCHITECTURE.md`, then run the tests below and check `git 
 
 1. Read `docs/ARCHITECTURE.md`, then this file.
 2. `git status --short` from the repository root.
-3. Run both test commands below; **487/487** is the expected baseline.
+3. Run both test commands below; **524/524** is the expected baseline.
 4. Next is 13b (element segments / `addElementSegment`), deferred until the caller is ready; 11 is
    done.
 
@@ -40,8 +40,8 @@ zig fmt --check src
   only for a cross build.
 - Wabt tools are found on `PATH`: `wasm-validate`, `wasm-objdump`, `wat2wasm`
   (`--enable-threads` for atomics).
-- Last green run: **487/487** in both modes; the 100-column guard in `src/tests/style.zig` covers
-  37 production files.
+- Last green run: **524/524** in both modes; the 100-column guard in `src/tests/style.zig` covers
+  41 production files.
 
 ## Conventions
 
@@ -52,17 +52,28 @@ zig fmt --check src
 - A new production file must be added to `src/tests/style.zig` and to a test file imported from
   `src/tests/all.zig`.
 - Comments: short, Zig-std style. Do not rewrite old comments for style.
+- `src/wsplice.zig` groups its exports: types first, then namespaces/module imports, then functions,
+  without section comments or blank separators. Its test block only imports `tests/all.zig`; that
+  registry is where every test module is named.
+- Assertions are contract checks, not input validation: section identity, span bounds, u32 widths,
+  selector occurrence and post-write run positions have asserts; accessors do not get invented
+  assertions. The two-per-function average remains a documented deviation, not a target to fake.
+- Supply rule: non-sink arguments over 16 bytes are `*const` (e.g. `Selector`, `Entry`). Sinks
+  (`Builder` storing `Source`), borrowed views (`Module.Section`) and failure descriptors
+  (`Diagnostics.Where`) are the documented exceptions in `ARCHITECTURE.md`.
 - Edits borrow: slices and rewriter contexts must outlive `emit`. `encode` runs twice (measure, then
   write), so it must be pure. Nothing allocates in the emit path; the builder allocates at plan
   time and is unmanaged (`init` takes no allocator).
-- One edit per section; `Patch.setPayload` refuses a second.
+- One edit per non-custom section; `Patch.setPayload` refuses a second. Custom sections use
+  `Patch.custom`, because they repeat and have no slots.
 - `Diagnostics` keeps the first failure; edits fail before writing (the measure pass runs first).
 - Work stepwise: implement, summarize the new signatures, wait for a go before the next stage.
 
 ## Public surface and resolving indices
 
-`src/wsplice.zig` re-exports `Body`, `BodyIter`, `Builder`, `Counts`, `Cursor`, `Diagnostics`, `Edit`,
-`Module`, `Options`, `Patch`, `Plan`, `Query`, `index`, `ValueType`, `emit`, `outputLen`.
+`src/wsplice.zig` re-exports `Body`, `BodyIter`, `Builder`, `Counts`, `Cursor`, `CustomEdit`,
+`CustomPlacement`, `CustomSelector`, `CustomSource`, `Diagnostics`, `Edit`, `Module`, `Options`,
+`Patch`, `Plan`, `Query`, `index`, `ValueType`, `emit`, `outputLen`, and `custom.dylink`.
 
 `Plan.fromPatch`, `Counts.of`, and `index.Layout` are public so a caller can resolve a symbolic
 target without exporting a separate resolver:
@@ -123,6 +134,35 @@ const type_final = try added_type.resolve(index.Layout.types(&counts));
   → `?tables.Type`. Imported tables are included; null means an absent index. `initWithCounts`
   reuses counts a caller already has. Body copying goes through `Body{locals.raw, mode.raw}` and
   `SetBodies`.
+- Custom sections: `Query.customSections()` iterates `CustomSection{name, data, section}` in file
+  order; `customSection(name)` returns the first exact-name match. Names/data are borrowed and
+  arbitrary; no allocation. `payload/custom.zig` owns only the name/data framing. Typed codecs live
+  under `custom/` and take data, not a name: `custom/dylink.zig` is implemented (`read`, `Update`,
+  `Info`); `custom/name.zig` is not implemented yet.
+- Custom edits: `Patch.custom` is a borrowed `[]const CustomEdit`; `custom/edit.zig` holds the
+  edit shape, `custom/apply.zig` holds emit-side matching, measurement and writing. `Source`
+  (`bytes` or streaming `rewrite`), `Placement` (`start`/`end`), `Selector`, and `Edit`
+  (`append`/`replace`/`remove`). `Builder.addCustomSection` (with placement),
+  `setCustomSection`, and `removeCustomSection` append to that list. A replacement preserves the
+  section's position; a removal deletes the whole section frame; a start append goes after the
+  8-byte header; an end append goes after all input bytes. Selectors are exact name bytes plus a
+  0-based occurrence among **input** custom sections; they are input-relative and do not renumber
+  after removals. A selector may have one replace or remove; appends do not target input selectors.
+  Names, byte sources and rewriter contexts are borrowed until `emit`, and a rewriter context must
+  have a stable address. `UnknownCustomSection` is emitted when an input selector has no match;
+  duplicate selectors are `DuplicateCustomSection`. `Diagnostics` records the custom name and
+  occurrence.
+- `custom/dylink.zig`: dylink.0 subsection framing (mem_info, needed, export/import info, unknown
+  kinds); kinds are a non-exhaustive `enum(u8)` ending in `_`, so adding a known kind is a field +
+  switch branch and unknown kinds stay opaque. `read` exposes `mem_info` and a validated `Needed`
+  view whose `count()`/`iterator()` parse the borrowed `encoded` vector on demand. `NeededSource` has `.none`, `.names`, and `.encoded`;
+  `Info.needed: NeededSource = .none`, and `Update.needed: ?NeededSource = null` where null means
+  keep. `.none` removes/omits, `.names` rewrites from a borrowed list, `.encoded` copies a validated
+  complete `vec(name)` payload. `Update.write` rewrites mem_info and needed in place (appending
+  needed when absent) and copies every other subsection byte-for-byte; `Info.write` creates mem_info
+  plus the chosen needed source. No allocator, no returned buffer. Missing/duplicate mem_info or
+  duplicate needed is `PayloadError.InvalidValue`; encoded needed is validated before writing;
+  arbitrary names work because `read`/`write` do not check the section name.
 - `edit/SetBodies.zig`: existing bodies by input function index, added bodies positional; hands the
   input entry's locals and expression to the body; refuses imported functions, out-of-range indices,
   duplicate bodies, and `.keep` locals on an added body (`NoInputBody`); copies untouched entries
@@ -141,16 +181,23 @@ const type_final = try added_type.resolve(index.Layout.types(&counts));
   and 32-bit values that do not fit, with a diagnostic.
 - `Builder` v2: `addType`, `addImport` (→ an added-import target), `addFunction`, `setBody` (any
   call order; `UnknownFunction` / `DuplicateBody` / `ImportedFunction`), `setTable` (`UnknownTable` /
-  `ImportedTable` / `DuplicateTable`), fallible `patch` (`MissingBody`, `UnknownType` for an
-  `.appended` type the plan never added; `patchWith` names the ordinal in the detail), plus the v1
-  global/export additions.
+  `ImportedTable` / `DuplicateTable`), `addCustomSection` (placement) / `setCustomSection` /
+  `removeCustomSection` (`DuplicateCustomSection`; missing selector is emit-time
+  `UnknownCustomSection`), fallible `patch` (`MissingBody`, `UnknownType` for an `.appended` type
+  the plan never added; `patchWith` names the ordinal in the detail), plus the v1 global/export
+  additions.
 - `Edit.encode`/`encodedLen` take the plan's `*const Plan`; `emit` builds it via
   `Plan.fromPatch`. Raw, kept and untouched bytes are never remapped; a raw edit for the
   import/type/function section contributes no plan values.
-- Errors: `EditTargetError` is shared by `BuilderError` and `EditError` for imported/duplicate body
-  and table targets.
+- `Patch.custom` is a separate borrowed list (`custom/edit.zig`); `emit` delegates its application
+  to `custom/apply.zig`: `.start` appends after the header, `.end` appends after all input bytes,
+  and replacements stay in place. Streaming sources write directly to the output; no replacement
+  buffer exists.
+- Errors: `EditTargetError` is shared by `BuilderError` and `EditError` for imported/duplicate body,
+  table, and custom-section targets; `UnknownCustomSection` is in `EditError`.
 - Missing entirely: element segments (`addElementSegment`), `addTable`, table instructions
-  (`table.get/set/grow/size`), and support for GC/multi-byte value types or GC type forms.
+  (`table.get/set/grow/size`), `custom/name.zig`, and support for GC/multi-byte value types or GC
+  type forms.
 
 ## Agreed design, next stage (see `docs/ARCHITECTURE.md`)
 
@@ -165,8 +212,8 @@ wrapper was deliberately not added: `Plan`/`Counts`/`Layout` are public for now,
 disassembly context can wrap them later.
 
 Deferred: element segments, `addTable`, table instructions; GC type/value types; imported-table
-`setTable` (import limits are not editable); the `AddGlobals` options struct; test abbreviation
-cleanup.
+`setTable` (import limits are not editable); `custom/name.zig`; the `AddGlobals` options struct;
+test abbreviation cleanup.
 
 ## Traps remembered
 
@@ -180,6 +227,30 @@ cleanup.
   unrelated local-index error in another function, or as output that validates but behaves wrong.
   Allocate per-function contexts with an arena or keep them in an outer array. `arena.create` is
   the usual fix.
+- Custom sources have the same lifetime: `CustomSource.from(&changes)` stores a context pointer.
+  Keep `changes`/`info` in an outer scope or an arena until `emit`. The source itself writes
+  directly to the output, so do not allocate a replacement buffer.
+- Custom matching scans custom sections only, not the whole module. A section whose name no edit
+  targets skips the occurrence scan. Byte sources compute length arithmetically; streaming sources
+  run during measure and again for write-side length/data. Building an occurrence index would need
+  allocation or caller storage, so it is deferred until custom-section counts justify it.
+- Custom replacement selectors are name + 0-based occurrence, not offsets. The emit pass parses
+  input custom names to match them; a patch with only appends does not parse names and leaves
+  opaque custom payloads untouched. Occurrences are input-relative: removing an earlier section
+  does not renumber a later selector, and appended sections never count. `UnknownCustomSection` is
+  emit-time because the builder has no module; duplicate selectors are rejected by both the builder
+  and emit.
+- Custom names, needed names/encoded bytes, and byte sources are borrowed until `emit`; streaming
+  source contexts must also have a stable address. A removal has no source. `remove` is an explicit
+  edit variant, not an empty replacement: an empty source leaves an empty custom section behind,
+  while remove deletes the frame. Copying a dylink needed vector from another module borrows that
+  module's bytes, so the source module must outlive `emit` as well.
+- `Detail.custom_section` is only the occurrence; the custom name is in `Where.name`. Do not add a
+  dylink-specific diagnostic detail: a malformed dylink payload is `PayloadError.InvalidValue`, and
+  the section name/offset are generic.
+- `custom/dylink.zig` is name-agnostic. `dylink.read`, `Update.write`, and `Info.write` must not
+  check for `"dylink.0"`; callers may use the same payload under an arbitrary custom name.
+- `custom/name.zig` is still unimplemented; do not list it as available until it exists.
 - `Body.Input.body` is a `Cursor` whose `bytes` are the module bytes, so `Op.at`/`Op.end` slice
   correctly in `Out.keep`. A cursor over a separate expression buffer only works when that buffer is
   the module.

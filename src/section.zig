@@ -1,5 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const Io = std.Io;
 
 const Cursor = @import("Cursor.zig");
 const errors = @import("errors.zig");
@@ -43,6 +44,16 @@ pub const Section = struct {
         return .{ .start = self.start, .end = self.payload.end };
     }
 };
+
+/// Bytes before a payload: the id byte plus a canonical size LEB. Computed by the same encoder the
+/// writer uses, so the two cannot disagree.
+pub fn headerLen(payload_len: u32) u32 {
+    var bytes: [5]u8 = undefined; // a u32 LEB128 is at most 5 bytes
+    var writer: Io.Writer = .fixed(&bytes);
+    // Any u32 fits in 5 bytes: a bound, not input-dependent.
+    writer.writeLeb128(payload_len) catch unreachable;
+    return 1 + @as(u32, @intCast(writer.buffered().len));
+}
 
 pub const SectionIter = struct {
     cursor: Cursor,

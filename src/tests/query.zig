@@ -327,3 +327,40 @@ test "Query: a broken table section is a query error" {
     const query = try m.query(.{});
     try testing.expectError(error.UnsupportedFeature, query.tableType(0));
 }
+
+test "Query: custom sections iterate in file order" {
+    const bytes = t.header ++
+        t.sec(0, &.{ 1, 'a', 0xAA }) ++
+        one_type ++
+        t.sec(0, &.{ 1, 'b', 0xBB }) ++
+        t.sec(0, &.{ 1, 'a', 0xCC });
+    const m = try Module.parse(&bytes);
+    const query = try m.query(.{});
+
+    var iterator = query.customSections();
+    const first = (try iterator.next()).?;
+    try testing.expectEqualStrings("a", first.name);
+    try testing.expectEqualSlices(u8, &.{0xAA}, first.data);
+    try testing.expectEqual(spec.SectionId.custom, first.section.id);
+
+    const second = (try iterator.next()).?;
+    try testing.expectEqualStrings("b", second.name);
+    try testing.expectEqualSlices(u8, &.{0xBB}, second.data);
+
+    const third = (try iterator.next()).?;
+    try testing.expectEqualStrings("a", third.name);
+    try testing.expectEqualSlices(u8, &.{0xCC}, third.data);
+    try testing.expectEqual(null, try iterator.next());
+
+    const lookup = (try query.customSection("a")).?;
+    try testing.expectEqualSlices(u8, &.{0xAA}, lookup.data);
+    try testing.expectEqual(@as(?Query.CustomSection, null), try query.customSection("missing"));
+}
+
+test "Query: a malformed custom name is Truncated" {
+    const bytes = t.header ++ t.sec(0, &.{ 5, 'a' });
+    const m = try Module.parse(&bytes);
+    const query = try m.query(.{});
+    var iterator = query.customSections();
+    try testing.expectError(error.Truncated, iterator.next());
+}

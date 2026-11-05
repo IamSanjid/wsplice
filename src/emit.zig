@@ -2,19 +2,20 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
 
-const Diagnostics = @import("Diagnostics.zig");
 const Edit = @import("edit.zig").Edit;
 const EmitError = @import("errors.zig").EmitError;
 const Module = @import("Module.zig");
 const Patch = @import("Patch.zig");
 const Plan = @import("Plan.zig");
 const Run = @import("Run.zig");
+const custom_apply = @import("custom/apply.zig");
 
 const spec = @import("spec.zig");
 const SectionId = spec.SectionId;
 const section_id_count = spec.section_id_count;
 
-const Section = @import("section.zig").Section;
+const section_mod = @import("section.zig");
+const Section = section_mod.Section;
 const Options = @import("Options.zig");
 
 /// `Patch.empty` is legal and copies the input through unchanged. A caller that already knows the
@@ -65,6 +66,10 @@ fn emitWalk(
     const len: u32 = @intCast(module.bytes.len); // Module.parse guarantees this fits
     var run: Run = .{ .bytes = module.bytes, .writer = writer };
 
+    try run.flush(spec.header_len);
+    try custom_apply.writeStart(&run, patch, options);
+    assert(run.start == spec.header_len); // start appends write only, they do not consume input
+
     var iterator = module.iterator();
     var end_prev: u32 = spec.header_len;
     var tail_pos: u32 = len; // where sections that belong after the last existing one go
@@ -74,7 +79,10 @@ fn emitWalk(
     while (iterator.next() catch unreachable) |section| {
         assert(section.start == end_prev); // sections tile the file
         end_prev = section.whole().end;
-        if (section.id == .custom) continue; // customs ride along inside the run
+        if (section.id == .custom) {
+            try custom_apply.writeInputEdit(&run, module, section, patch, options);
+            continue; // unmatched customs ride along inside the run
+        }
 
         const rank = section.id.rank();
         assert(rank >= rank_next); // Module.parse enforced strictly increasing ranks
@@ -103,6 +111,7 @@ fn emitWalk(
     assert(applied == patch.count()); // every patched section was replaced or inserted once
 
     try run.flush(len); // the last run, including any trailing customs
+    try custom_apply.writeEnd(&run, patch, options);
     assert(run.start == len);
 }
 
@@ -118,16 +127,6 @@ fn spliceSection(
     try run.flush(section.start); // everything before this section, unchanged
     try writeSection(run.writer, module, section.id, payload_len, edit, plan, options);
     run.skip(section.whole().end); // the old bytes of this section are dropped
-}
-
-/// Bytes before a section's payload: the id byte plus the size LEB.
-/// Computed with the same encoder `writeSection` uses, so the two cannot disagree.
-fn sectionHeaderLen(payload_len: u32) u32 {
-    var bytes: [5]u8 = undefined; // a u32 LEB128 is at most 5 bytes
-    var writer: Io.Writer = .fixed(&bytes);
-    // Any u32 fits in 5 bytes: a bound, not input-dependent.
-    writer.writeLeb128(payload_len) catch unreachable;
-    return 1 + @as(u32, @intCast(writer.buffered().len));
 }
 
 /// Add one section that the input does not have, at input offset `at`. Nothing is skipped.
@@ -207,9 +206,16 @@ fn measure(
 
         // Absent: nothing to remove.
         const len_old: u64 = if (module.section(id)) |old| old.whole().len() else 0;
-        const len_new: u64 = sectionHeaderLen(payload_len) + payload_len;
+        const len_new: u64 = section_mod.headerLen(payload_len) + payload_len;
         assert(len_total >= len_old);
         len_total = len_total - len_old + len_new;
+    }
+
+    if (patch.custom.len != 0) {
+        const delta = try custom_apply.measureDelta(module, patch, options);
+        const adjusted = @as(i64, @intCast(len_total)) + delta;
+        assert(adjusted >= 0);
+        len_total = @intCast(adjusted);
     }
 
     result.len_total = std.math.cast(u32, len_total) orelse return error.Overflow;
@@ -228,7 +234,7 @@ fn expectedSizeLebLen(value: u32) u32 {
     return len;
 }
 
-test "sectionHeaderLen matches an independent LEB length at every boundary" {
+test "section header length matches an independent LEB length at every boundary" {
     const values = [_]u32{
         0, 1, 127, // 1 byte
         128, 16383, 16384, // 2 bytes, then 3
@@ -236,11 +242,11 @@ test "sectionHeaderLen matches an independent LEB length at every boundary" {
         268435456, std.math.maxInt(u32), // 5 bytes
     };
     for (values) |value| {
-        try testing.expectEqual(1 + expectedSizeLebLen(value), sectionHeaderLen(value));
+        try testing.expectEqual(1 + expectedSizeLebLen(value), section_mod.headerLen(value));
     }
 }
 
-test "sectionHeaderLen agrees with what writeSection really writes" {
+test "section header length agrees with what writeSection really writes" {
     const module = try Module.parse(&(spec.magic ++ spec.version));
     const plan: Plan = .{};
     for ([_]u32{ 0, 1, 127, 128, 300, 16383, 16384 }) |len| {
@@ -253,6 +259,6 @@ test "sectionHeaderLen agrees with what writeSection really writes" {
         defer out.deinit();
         try writeSection(&out.writer, &module, .type, len, &edit, &plan, .{});
 
-        try testing.expectEqual(sectionHeaderLen(len) + len, out.written().len);
+        try testing.expectEqual(section_mod.headerLen(len) + len, out.written().len);
     }
 }

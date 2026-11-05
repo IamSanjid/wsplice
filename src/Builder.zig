@@ -18,6 +18,7 @@ const AddGlobals = @import("edit/AddGlobals.zig");
 const AddImports = @import("edit/AddImports.zig");
 const AddTypes = @import("edit/AddTypes.zig");
 const Body = @import("payload/Body.zig");
+const custom_edit = @import("custom/edit.zig");
 const Diagnostics = @import("Diagnostics.zig");
 const Edit = @import("edit.zig").Edit;
 const Options = @import("Options.zig");
@@ -50,6 +51,8 @@ bodies_set: std.ArrayList(bool) = .empty,
 existing_bodies: std.ArrayList(SetBodies.Replacement) = .empty,
 /// One replacement per input table the plan sets.
 table_replacements: std.ArrayList(SetTables.Replacement) = .empty,
+/// Custom-section appends and replacements, in call order. These do not use `Patch.slots`.
+custom_edits: std.ArrayList(custom_edit.Edit) = .empty,
 
 const Builder = @This();
 
@@ -69,6 +72,7 @@ pub fn deinit(self: *Builder, allocator: Allocator) void {
     self.bodies_set.deinit(allocator);
     self.existing_bodies.deinit(allocator);
     self.table_replacements.deinit(allocator);
+    self.custom_edits.deinit(allocator);
 }
 
 /// Adds `signature` and returns the reference that names it: the first type added is
@@ -194,6 +198,72 @@ pub fn setTable(
     }
 }
 
+/// Appends a custom section at `placement`. `.start` puts it immediately after the wasm header,
+/// before every section; `.end` puts it after all input bytes, including trailing custom sections.
+/// The name and source are borrowed until `emit`; a streaming source's context must also have a
+/// stable address.
+pub fn addCustomSection(
+    self: *Builder,
+    allocator: Allocator,
+    placement: custom_edit.Placement,
+    name: []const u8,
+    source: custom_edit.Source,
+) Error!void {
+    try self.custom_edits.append(allocator, .{ .append = .{
+        .placement = placement,
+        .name = name,
+        .source = source,
+    } });
+}
+
+/// Replaces the data of the input custom section matching `name` and `occurrence`, preserving its
+/// name and position. The source's rewriter receives the original data. The name and source are
+/// borrowed until `emit`; a streaming source's context must also have a stable address. A missing
+/// selector is `UnknownCustomSection` at emit; a selector already used by a replace or remove is
+/// `DuplicateCustomSection`.
+pub fn setCustomSection(
+    self: *Builder,
+    allocator: Allocator,
+    name: []const u8,
+    occurrence: u32,
+    source: custom_edit.Source,
+) Error!void {
+    const selector: custom_edit.Selector = .{ .name = name, .occurrence = occurrence };
+    if (self.customTargetInUse(&selector)) return error.DuplicateCustomSection;
+    try self.custom_edits.append(allocator, .{ .replace = .{
+        .selector = selector,
+        .source = source,
+    } });
+}
+
+/// Deletes the input custom section matching `name` and `occurrence`, including its section frame.
+/// The name is borrowed until `emit`. Occurrences are input-relative, so removing earlier sections
+/// does not renumber this selector. A missing selector is `UnknownCustomSection` at emit; a
+/// selector already used by a replace or remove is `DuplicateCustomSection`.
+pub fn removeCustomSection(
+    self: *Builder,
+    allocator: Allocator,
+    name: []const u8,
+    occurrence: u32,
+) Error!void {
+    const selector: custom_edit.Selector = .{ .name = name, .occurrence = occurrence };
+    if (self.customTargetInUse(&selector)) return error.DuplicateCustomSection;
+    try self.custom_edits.append(allocator, .{ .remove = selector });
+}
+
+fn customTargetInUse(self: *const Builder, selector: *const custom_edit.Selector) bool {
+    for (self.custom_edits.items) |*edit| switch (edit.*) {
+        .append => {},
+        .replace => |existing| {
+            if (custom_edit.Selector.eql(&existing.selector, selector)) return true;
+        },
+        .remove => |existing| {
+            if (custom_edit.Selector.eql(&existing, selector)) return true;
+        },
+    };
+    return false;
+}
+
 /// A patch that adds everything added so far. `patchWith` with no diagnostics sink.
 pub fn patch(self: *const Builder) Error!Patch {
     return self.patchWith(.{});
@@ -258,6 +328,7 @@ pub fn patchWith(self: *const Builder, options: Options) Error!Patch {
     if (self.exports.items.len != 0) {
         setPayload(&result, .@"export", .{ .add_exports = .{ .entries = self.exports.items } });
     }
+    result.custom = self.custom_edits.items;
     return result;
 }
 

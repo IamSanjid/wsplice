@@ -33,6 +33,10 @@ pub const Detail = union(enum) {
     missing_body: struct {
         ordinal: u32,
     },
+    /// Which custom section a selector named. The name itself is in `Where.name`.
+    custom_section: struct {
+        occurrence: u32,
+    },
 };
 
 const Diagnostics = @This();
@@ -117,6 +121,10 @@ pub fn format(self: *const Diagnostics, w: *Io.Writer) Io.Writer.Error!void {
         .missing_body => |detail| try w.print(
             " (added function {d} has no body)",
             .{detail.ordinal},
+        ),
+        .custom_section => |detail| try w.print(
+            " (custom section occurrence {d})",
+            .{detail.occurrence},
         ),
     }
 }
@@ -264,6 +272,24 @@ test "Diagnostics: format prints the owning function and a local index" {
     try d.format(&w);
     try std.testing.expectEqualStrings(
         "IndexOutOfRange in code section, function 7 (local index 3, but only 2 exist)",
+        w.buffered(),
+    );
+}
+
+test "Diagnostics: format prints a custom section occurrence" {
+    var buf: [192]u8 = undefined;
+    var d: Diagnostics = .{};
+    Diagnostics.record(&d, error.UnknownCustomSection, .{
+        .section = .custom,
+        .name = "dylink.0",
+        .detail = .{ .custom_section = .{ .occurrence = 1 } },
+    });
+
+    var w: Io.Writer = .fixed(&buf);
+    try d.format(&w);
+    try std.testing.expectEqualStrings(
+        "UnknownCustomSection in custom section, name \"dylink.0\" " ++
+            "(custom section occurrence 1)",
         w.buffered(),
     );
 }

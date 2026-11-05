@@ -4,8 +4,8 @@
 //! The sources are embedded at compile time rather than read from disk, so the check needs no
 //! filesystem, no allocator, and no particular target: it runs wherever the tests run.
 //!
-//! Scope: the production files of `src/wsplice`. `tests/` is still being cleaned up and is
-//! deliberately exempt; remove that exemption when the test pass happens.
+//! Scope: the production files of `src`. `tests/` is still being cleaned up and is deliberately
+//! exempt; remove that exemption when the test pass happens.
 const std = @import("std");
 
 const cols_max = 100;
@@ -45,6 +45,7 @@ const sources = [_]Source{
     .{ .name = "payload/Body.zig", .text = @embedFile("../payload/Body.zig") },
     .{ .name = "payload/Counts.zig", .text = @embedFile("../payload/Counts.zig") },
     .{ .name = "payload/code.zig", .text = @embedFile("../payload/code.zig") },
+    .{ .name = "payload/custom.zig", .text = @embedFile("../payload/custom.zig") },
     .{ .name = "payload/const_expr.zig", .text = @embedFile("../payload/const_expr.zig") },
     .{ .name = "payload/exports.zig", .text = @embedFile("../payload/exports.zig") },
     .{ .name = "payload/functions.zig", .text = @embedFile("../payload/functions.zig") },
@@ -55,6 +56,9 @@ const sources = [_]Source{
     .{ .name = "payload/tables.zig", .text = @embedFile("../payload/tables.zig") },
     .{ .name = "payload/types.zig", .text = @embedFile("../payload/types.zig") },
     .{ .name = "payload/valtype.zig", .text = @embedFile("../payload/valtype.zig") },
+    .{ .name = "custom/edit.zig", .text = @embedFile("../custom/edit.zig") },
+    .{ .name = "custom/apply.zig", .text = @embedFile("../custom/apply.zig") },
+    .{ .name = "custom/dylink.zig", .text = @embedFile("../custom/dylink.zig") },
 };
 
 test "style: no production line is longer than 100 columns" {

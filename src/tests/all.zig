@@ -4,11 +4,13 @@ test {
     _ = @import("module.zig");
     _ = @import("query.zig");
     _ = @import("style.zig");
+    _ = @import("custom/dylink.zig");
     _ = @import("edit/add_export.zig");
     _ = @import("edit/add_functions.zig");
     _ = @import("edit/add_globals.zig");
     _ = @import("edit/add_imports.zig");
     _ = @import("edit/add_types.zig");
+    _ = @import("custom/edit.zig");
     _ = @import("edit/set_bodies.zig");
     _ = @import("edit/set_tables.zig");
     _ = @import("payload/body.zig");

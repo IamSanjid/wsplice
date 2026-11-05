@@ -1,6 +1,6 @@
-//! Reading a module: function bodies, types, signatures, table types, and where an entity comes
-//! from. Queries borrow the module's bytes, so the module must outlive them, and they never
-//! allocate.
+//! Reading a module: function bodies, types, signatures, table types, custom sections, and where
+//! an entity comes from. Queries borrow the module's bytes, so the module must outlive them, and
+//! they never allocate.
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -10,6 +10,7 @@ const Options = @import("Options.zig");
 const Counts = @import("payload/Counts.zig");
 const Body = @import("payload/Body.zig");
 const code = @import("payload/code.zig");
+const custom = @import("payload/custom.zig");
 const functions = @import("payload/functions.zig");
 const imports = @import("payload/imports.zig");
 const tables = @import("payload/tables.zig");
@@ -120,6 +121,45 @@ pub fn functionInfo(self: *const Query, function: u32) PayloadError!?FunctionInf
         .signature = signature,
         .body = body,
     };
+}
+
+/// A custom section as the input has it. `name` and `data` are borrowed from the module and are
+/// raw bytes; `data` is everything after the name vector.
+pub const CustomSection = struct {
+    name: []const u8,
+    data: []const u8,
+    section: Module.Section,
+};
+
+/// Iterates custom sections in file order. Non-custom sections are skipped.
+pub const CustomSectionIter = struct {
+    module: *const Module,
+    sections: Module.SectionIter,
+
+    pub fn next(self: *CustomSectionIter) PayloadError!?CustomSection {
+        while (true) {
+            // The module was parsed, so its section framing cannot fail here.
+            const section = (self.sections.next() catch unreachable) orelse return null;
+            if (section.id != .custom) continue;
+            const entry = try custom.read(self.module.bytes, section.payload);
+            return .{ .name = entry.name, .data = entry.data, .section = section };
+        }
+    }
+};
+
+/// Custom sections in file order. Custom sections can repeat, so this is an iterator, not an index.
+pub fn customSections(self: *const Query) CustomSectionIter {
+    return .{ .module = self.module, .sections = self.module.iterator() };
+}
+
+/// The first custom section with exactly `name`, in file order; null when there is none. Names are
+/// raw bytes, and duplicate names are legal; use `customSections` when all occurrences matter.
+pub fn customSection(self: *const Query, name: []const u8) PayloadError!?CustomSection {
+    var iterator = self.customSections();
+    while (try iterator.next()) |section| {
+        if (std.mem.eql(u8, section.name, name)) return section;
+    }
+    return null;
 }
 
 /// The table's origin and type, or null when no table has that index.

@@ -1,10 +1,12 @@
-//! At most one edit per section. An edit writes its section's whole payload, so two edits for the
-//! same section cannot be chained: a plan with two operations for one section folds them into one
-//! edit, and `setPayload` refuses a second write rather than replacing the first.
+//! At most one edit per non-custom section. An edit writes its section's whole payload, so two
+//! edits for the same section cannot be chained: a plan with two operations for one section folds
+//! them into one edit, and `setPayload` refuses a second write rather than replacing the first.
+//! Custom sections are a separate list because they repeat and have no rank.
 const std = @import("std");
 const assert = std.debug.assert;
 
 const Edit = @import("edit.zig").Edit;
+const CustomEdit = @import("custom/edit.zig").Edit;
 
 const PatchError = @import("errors.zig").PatchError;
 
@@ -13,6 +15,9 @@ const SectionId = spec.SectionId;
 const section_id_count = spec.section_id_count;
 
 slots: [section_id_count]?Edit, // indexed by @backingInt(id); slot 0 (custom) stays null
+/// Custom-section edits are a list, not slots: custom sections repeat and have no rank. Borrowed
+/// from the builder, or set directly by a hand-built patch.
+custom: []const CustomEdit = &.{},
 
 const Patch = @This();
 
@@ -56,7 +61,7 @@ pub fn count(self: *const Patch) u8 {
 }
 
 pub fn isEmpty(self: *const Patch) bool {
-    return self.count() == 0;
+    return self.count() == 0 and self.custom.len == 0;
 }
 
 fn assertInvariants(self: *const Patch) void {

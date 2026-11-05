@@ -347,6 +347,244 @@ while (params.next()) |value| { ... }
 there would turn an inconsistent type index into a query error instead of an index the caller can
 inspect. Signatures are the separate query.
 
+## Custom sections
+
+Custom sections are not an index space: they can repeat, appear anywhere, and their names are
+open-ended. `Module` therefore does not store them, and `Query` exposes them by iteration:
+
+```zig
+pub const CustomSection = struct {
+    name: []const u8, // borrowed; raw bytes, not checked for UTF-8
+    data: []const u8, // everything after the name vector
+    section: Section, // frame and offsets, for exact copying
+};
+
+var customs = query.customSections();
+while (try customs.next()) |custom| { ... }
+
+const first = try query.customSection("dylink.0");
+```
+
+`payload/custom.zig` owns only the framing: `name:name data:bytes` inside a section payload. It does
+not know any custom-section semantics. `Query` does not hardcode `name`, `dylink.0`, `producers`,
+or any other name: callers can parse any section's `data` with any codec.
+
+The custom subsystem has its own home, because it is not a `SectionId` edit:
+
+```text
+src/payload/custom.zig    framing only
+src/custom/edit.zig       Source, Rewriter, Placement, Selector, Edit
+src/custom/apply.zig      emit-side matching, measuring and writing
+src/custom/dylink.zig     dylink.0 codec
+```
+
+`custom/edit.zig` and `custom/apply.zig` are namespaces, so they are snake_case. `edit.zig` stays
+untouched: its `Edit` union is one payload for one `SectionId`, while a custom edit is a repeatable
+list of borrowed sources in `Patch.custom`. Putting custom edits in `edit.zig` would either give
+custom sections fake slots or force every section edit to carry custom state.
+
+`custom/apply.zig` owns the custom rules: matching selectors, start/end placement, measuring the
+replacement size, writing replacements, and custom diagnostics. `emit.zig` only walks sections and
+calls it; the general emitter no longer contains custom parsing or matching.
+
+Typed codecs live under `custom/` and are ordinary functions over `CustomSection.data`:
+
+```text
+custom/dylink.zig   (implemented)
+custom/name.zig     (planned; not implemented yet)
+```
+
+They take data, not a name, so a dylink payload under an arbitrary name works. A codec only needs:
+
+```zig
+pub fn read(data: []const u8) PayloadError!View
+pub const Update = struct { pub fn write(self: *const Update, original: ?[]const u8,
+    writer: *Io.Writer) EncodeError!void };
+```
+
+The same convention is the extension point for user codecs; there is no registry, no callback
+table, and no allocation for registering a parser or rewriter.
+
+### Custom edits
+
+Custom sections cannot use `Patch.slots`: one slot per `SectionId` cannot represent repeated
+sections, and slot 0 is reserved for non-custom sections. `Patch` carries a separate borrowed list:
+
+```zig
+custom: []const CustomEdit = &.{},
+```
+
+`custom/edit.zig` defines the edit shape:
+
+```zig
+pub const Placement = enum { start, end };
+pub const Selector = struct {
+    name: []const u8, // borrowed until emit
+    occurrence: u32 = 0,
+};
+
+pub const Source = union(enum) {
+    bytes: []const u8, // borrowed until emit
+    rewrite: Rewriter, // write(original: ?[]const u8, writer)
+};
+
+pub const Edit = union(enum) {
+    append: struct { placement: Placement, name: []const u8, source: Source },
+    replace: struct { selector: Selector, source: Source },
+    remove: Selector,
+};
+```
+
+- `append.start` places a new custom section immediately after the 8-byte module header, before
+  every section.
+- `append.end` places it after all input sections and trailing custom sections.
+- `replace` preserves the existing section's position; it replaces only the data after its name.
+- `remove` deletes the entire input section frame: id byte, size LEB, name and data. It is not a
+  replacement with an empty source, which would leave an empty custom section behind.
+- A selector is exact name bytes plus a 0-based occurrence **among input custom sections in input
+  file order**. Occurrences are input-relative: removing an earlier section does not renumber a
+  later selector. Appended sections are never counted by a selector.
+- A replace or remove selector may be used once. `replace` and `remove` share that namespace, so the
+  same `(name, occurrence)` cannot have both actions. An append may reuse the same name.
+- `Source.bytes` writes a known slice; `Source.rewrite` streams through a callback and receives the
+  original `data` for a replacement, or null for an append.
+- Names, byte sources and rewriter contexts are borrowed until `emit` returns. A rewriter context
+  must have a stable address. This is the same lifetime rule as `Body.Rewriter`.
+- A custom rewriter returns `EncodeError`, must be deterministic (measure and write both call it),
+  and never materializes a replacement payload: the section header and name are written around its
+  output.
+
+`Builder` provides:
+
+```zig
+builder.addCustomSection(gpa, .start, name, source);
+builder.setCustomSection(gpa, name, occurrence, source);
+builder.removeCustomSection(gpa, name, occurrence);
+```
+
+A selector that matches no input section is `UnknownCustomSection` at emit; a second replace/remove
+for one selector is `DuplicateCustomSection` at build time or at emit for a hand-built patch.
+`Diagnostics` records the custom name in `Where.name` and the occurrence in
+`Detail.custom_section`. Malformed custom framing is an ordinary `PayloadError`; dylink's
+missing/duplicate mem_info is `PayloadError.InvalidValue`. Neither error set grows for a specific
+custom format.
+
+`custom/apply.zig` resolves each input selector while walking custom sections in file order. For a
+replacement it measures the new payload and writes it in place; for a removal it subtracts the old
+section length from the measure and calls `run.flush(section.start)` followed by
+`run.skip(section.whole().end)`, writing no section bytes. Both actions leave `run.start` at the old
+section's end. `writeInputEdit` returns `void`: `emit` does not need to branch on whether a section
+was selected, and the custom module centralizes that control flow.
+
+The performance cost is in custom-section count, not module size. Matching walks only custom
+sections; a section whose name no edit targets skips the occurrence scan entirely. Selector
+validation and occurrence counting are still `O(custom sections × input edits)` in the worst case,
+which is deliberate: building a name/occurrence index would require allocation or caller-owned
+storage, and custom sections are normally a handful. A byte source computes its length
+arithmetically; a streaming source is run for measurement and again for the write-side length and
+data, so a rewriter must be deterministic and should be cheap. If custom-section counts ever become
+large, the next step is an optional plan-time index or caller-provided resolver, not an allocation
+inside `emit`.
+
+### Dylink
+
+`custom/dylink.zig` uses the subsection framing:
+
+```text
+data ::= subsection*
+subsection ::= kind:u8 size:u32 payload:bytes
+```
+
+Known kinds are `1` mem_info, `2` needed, `3` export_info, and `4` import_info. `mem_info` is four
+LEB u32s: `memory_size`, `memory_alignment_log2`, `table_size`, `table_alignment_log2`. The kind is a
+non-exhaustive `enum(u8)` ending in `_`, so a new kind only adds an enum field and switch branch;
+unknown kinds are skipped by `read` and copied byte-for-byte by `Update`.
+
+`read` also validates `needed` and exposes it as a borrowed view:
+
+```zig
+pub const Needed = struct {
+    encoded: []const u8, // complete vec(name), count included
+    pub fn count(self: Needed) PayloadError!u32;
+    pub fn iterator(self: Needed) PayloadError!NeededIter;
+};
+```
+
+`NeededIter.next` yields borrowed names and reports trailing bytes. `Needed.encoded` is the exact
+vector payload, so it can be copied without re-encoding. `count` and `iterator` parse the first LEB
+on demand, so the view has no derived state to drift. Duplicate needed subsections and malformed
+vectors are payload errors; duplicate mem_info is `InvalidValue`.
+
+Needed edits use one union for both creation and update:
+
+```zig
+pub const NeededSource = union(enum) {
+    none,                          // Info: omit; Update: remove
+    names: []const []const u8,     // re-encode this list
+    encoded: []const u8,           // complete vec(name), validated
+};
+
+pub const Info = struct {
+    mem_info: MemInfo = .{},
+    needed: NeededSource = .none,
+};
+
+pub const Update = struct {
+    ...
+    needed: ?NeededSource = null,  // null: keep existing
+};
+```
+
+| `Update.needed` | Existing needed | Result |
+|---|---|---|
+| `null` | present/absent | preserve/leave absent |
+| `.none` | present | remove |
+| `.none` | absent | no-op |
+| `.names` | present | replace in place |
+| `.names` | absent | append |
+| `.encoded` | present | replace in place |
+| `.encoded` | absent | append |
+
+`.names = &.{}` writes an empty vector; `.none` removes the subsection. `.encoded` is validated
+before writing, so an arbitrary slice cannot emit a malformed needed vector. `Info.needed = .none`
+omits the subsection; `.names`/`.encoded` create it.
+
+`Update` rewrites mem_info and needed where present, appends needed when absent, and copies every
+other subsection — export/import info and unknown kinds — byte-for-byte. It writes directly to the
+output writer: there is no intermediate `[]u8` and no allocator. Missing `mem_info` is
+`PayloadError.InvalidValue`. Dylink specific errors do not enter `errors.zig`.
+
+Names in `NeededSource.names`, `NeededSource.encoded`, and `Needed.encoded` are borrowed until
+`emit`; when copying from another module, that module must outlive `emit` too. There is no
+allocation for an exact copy:
+
+```zig
+const source = try dylink.read(source_custom.data);
+var changes: dylink.Update = .{
+    .needed = .{ .encoded = source.needed.?.encoded },
+};
+try builder.setCustomSection(gpa, target_custom.name, 0, .from(&changes));
+```
+
+`Info` creates a new payload with mem_info and an optional needed source. To add a missing
+`dylink.0` at the top:
+
+```zig
+var info: dylink.Info = .{ .mem_info = ... };
+try builder.addCustomSection(gpa, .start, dylink.name, .from(&info));
+```
+
+To edit an existing one, without knowing or changing its name:
+
+```zig
+var changes: dylink.Update = .{ .memory_size = ... };
+try builder.setCustomSection(gpa, custom.name, 0, .from(&changes));
+```
+
+There is no `Query.dylink()` method: the name may be arbitrary, and a one-line `dylink.read` of the
+custom section's data is clearer. `custom/name.zig` is planned to follow the same pattern; it is not
+part of the core and is not implemented yet.
+
 ## Building a plan
 
 The builder only accumulates edits; it never reads a module. A function and its body are added in
@@ -472,9 +710,15 @@ rules and the deviations from them live together; the deviation is what this cod
 | 100 columns, without exception | `tests/` is exempt; the guard in `tests/style.zig` covers production files only | The test pass has not happened yet; a guard that fails on day one gets deleted | the test cleanup pass, then add `tests/` to the guard |
 | no abbreviations | inline tests in production files keep short locals (`c`, `it`, `m`) | Test prose is read differently from library code, and renaming them is churn with no safety payoff | the same test cleanup pass |
 | explicit options at call sites | tests pass `.{}` | `.{}` is the whole point of an all-defaults struct; spelling out eight nulls hurts reading | never for `Options`; keep spelling out options that are not the default |
-| two assertions per function, average | about one per function | Many functions are accessors where a second assertion would be invented, not found | when a function grows a second real invariant |
+| two assertions per function, average | about one per function; custom code adds assertions for section identity, span bounds and u32 widths, not padded into accessors | Many functions are accessors where a second assertion would be invented, not found | when a function grows a second real invariant |
 | no dynamic allocation after init | the `Builder` takes an allocator per call, and `init` takes none | A library cannot size itself from a caller's input the way a server can; the rule that matters, "nothing allocates in the emit path", holds | if the `Storage` (caller-provided slices) route is added |
 | value arguments over 16 bytes as `*const` | sinks, borrowed views and failure descriptors stay by value | See below | a view gains an invariant that a copy could break |
+
+The custom subsystem follows the file-naming rule explicitly: `custom/edit.zig`,
+`custom/apply.zig`, `custom/dylink.zig` and `payload/custom.zig` are namespaces and stay snake_case;
+only files with top-level fields are TitleCase types. Custom edits stay out of `edit.zig` because
+they are a repeatable list with no `SectionId`, not one payload edit. `emit.zig` delegates the
+custom rules to `custom/apply.zig` so the general section walk remains readable.
 
 ### By-value arguments over 16 bytes
 
@@ -501,16 +745,25 @@ is a readability decision, not a feasibility one.
 
 `Builder.addGlobal` takes `Global` (over 16 bytes) by value, `Builder.setBody` takes `Body` (48
 bytes), `Builder.addImport` takes its descriptor, `Builder.addType` takes `Signature` (over 16
-bytes), and `Builder.setTable` takes `tables.Type` (over 16 bytes), for the same reason: the list
-stores a copy, and that copy is the call's job.
+bytes), `Builder.setTable` takes `tables.Type` (over 16 bytes), and
+`Builder.addCustomSection`/`setCustomSection` take `custom_edit.Source` by value, for the same
+reason: the list stores a copy, and that copy is the call's job.
 
 **Views are copied windows.** `Cursor` (24 bytes) is copied into every payload iterator on purpose:
 the iterator advances its own copy and the caller's cursor must not move. `BodyIter` (32) is one
 iteration's state; a rewriter gets a fresh one per pass, so passing it by value is the contract.
 `Body.Input` (40) is built at the call site from the entry being replaced, read once, and dropped.
+`Module.Section` (24) is a borrowed frame and is passed by value where a custom edit is matched or
+written.
 
 **Descriptors are read and forgotten.** `Diagnostics.Where` describes one failure; every call site
 hands over a literal.
+
+The custom supply-rule cases are explicit: `custom_edit.Selector` (24 bytes) is not a sink, so
+`Selector.eql`, `Builder.customTargetInUse` and `custom/apply.zig`'s `selectorExists` take
+`*const Selector`. `payload/custom.Entry` (32 bytes) is not a sink either, so `write` and
+`encodedLen` take `*const Entry`. `custom_edit.Source` is the exception because the builder stores
+it; `Module.Section` and `Diagnostics.Where` are the view and descriptor exceptions.
 
 Everything else over 16 bytes is `*const`: method receivers (`Body`, `Query`, `FunctionBody`),
 `code.Entry` inside a constructor, the `Plan` (`Edit.encode`, `measure`, `writeSection`,
