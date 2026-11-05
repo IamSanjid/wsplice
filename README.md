@@ -2,7 +2,7 @@
 
 Usage:
 ```sh
-zig fetch --save git+https://github.com/zigtools/zls.git
+zig fetch --save git+https://github.com/IamSanjid/wsplice.git
 ```
 
 ```zig
