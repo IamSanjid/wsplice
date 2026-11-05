@@ -1,6 +1,5 @@
-//! Custom-section edits. A custom section can repeat and has no rank, so these edits live in
-//! `Patch.custom` instead of a `SectionId` slot. The source is either bytes already known or a
-//! streaming rewriter; nothing here allocates or materializes the replacement payload.
+//! Custom-section edits. They live in `Patch.custom` because custom sections repeat and have no
+//! rank. A source is bytes or a streaming rewriter; nothing here allocates a replacement payload.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -8,13 +7,11 @@ const Io = std.Io;
 const errors = @import("../errors.zig");
 const EncodeError = errors.EncodeError;
 
-/// Where a new custom section goes. Custom sections can appear anywhere; these are the two
-/// placements the first version supports.
+/// Where a new custom section goes; these are the two placements the first version supports.
 pub const Placement = enum { start, end };
 
-/// Selects an input custom section by exact name bytes and 0-based occurrence in input file order.
-/// `name` is borrowed until `emit`. Occurrences are input-relative: removing an earlier section
-/// does not renumber later selections.
+/// Selects an input custom section by exact name and 0-based occurrence in input file order.
+/// `name` is borrowed until `emit`; occurrences are input-relative and do not renumber.
 pub const Selector = struct {
     name: []const u8,
     occurrence: u32 = 0,
@@ -33,8 +30,8 @@ pub const Rewriter = struct {
         writer: *Io.Writer,
     ) EncodeError!void,
 
-    /// Erases `context` to the stored function pointer. `context` must be `*const T`, and the
-    /// pointed-to value must outlive `emit` at a stable address.
+    /// Erases `context` to the stored function pointer. `context` must be `*const T` and stay at a
+    /// stable address until `emit`.
     pub fn from(context: anytype) Rewriter {
         const info = @typeInfo(@TypeOf(context));
         if (info != .pointer) @compileError("Rewriter.from takes a pointer: pass &.value");
@@ -59,10 +56,9 @@ pub const Rewriter = struct {
     }
 };
 
-/// The data after a custom section's name. `bytes` is for a payload known at plan time;
-/// `rewrite` streams one and receives the original data for a replacement or null for an append.
-/// Bytes and rewriter contexts are borrowed until `emit` returns; a context must have a stable
-/// address.
+/// The data after a custom section's name. `bytes` is known at plan time; `rewrite` streams and
+/// receives the original data for a replacement, or null for an append. Both are borrowed until
+/// `emit`; a rewriter context needs a stable address.
 pub const Source = union(enum) {
     bytes: []const u8,
     rewrite: Rewriter,
@@ -104,8 +100,8 @@ pub const Edit = union(enum) {
         selector: Selector,
         source: Source,
     },
-    /// Deletes the selected input custom section, including its id byte, size LEB, name and data.
-    /// A replacement with an empty source would leave an empty section behind; this does not.
+    /// Deletes the selected input section, including its frame. Unlike an empty replacement, it
+    /// leaves no empty section behind.
     remove: Selector,
 };
 

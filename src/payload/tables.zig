@@ -1,12 +1,7 @@
-//! Reader and writer for the table section payload: one table type per entry.
+//! Reads and writes the table section: one table type (`reftype limits`) per table.
 //!
-//!     table     ::= vec(tabletype)
-//!     tabletype ::= reftype limits
-//!
-//! A table's `reftype` is one abstract heap type, the one-byte shorthand for `ref null ht`.
-//! Prefixed reference types are refused, like everywhere else in the library. An entry is also
-//! exposed as its encoded bytes, which is what `SetTables` copies for the tables it does not
-//! change.
+//! Reference types use the one-byte shorthand; prefixed forms are refused. `Entry.bytes` preserves
+//! the exact encoding for entries an edit copies unchanged.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -49,8 +44,7 @@ pub const Iterator = struct {
         return .{ .cursor = cursor, .count = count };
     }
 
-    /// The next table type, or null after `count` entries (and only if the payload ends there).
-    /// A failed call leaves the iterator where it was.
+    /// The next table type, or null after `count` entries; trailing bytes are an error.
     pub fn next(self: *Iterator) PayloadError!?Entry {
         assert(self.yielded <= self.count);
         if (self.yielded == self.count) {

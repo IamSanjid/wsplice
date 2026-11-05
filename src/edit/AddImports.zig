@@ -1,15 +1,8 @@
-//! Appends imports to the import section; creates the section when absent.
+//! Appends imports, creating the section when absent.
 //!
-//!     import ::= name name importdesc
-//!
-//! The names are borrowed bytes, written verbatim. Function and tag descriptors carry symbolic
-//! type indices, resolved against the input's type count like a function declaration's; table,
-//! memory and global descriptors are the shapes `payload/imports.zig` reads, re-encoded here. Old
-//! entries are copied verbatim, padded LEBs included, and the count is canonical.
-//!
-//! An import is placed before the module's own entities, so it shifts the indices of its space.
-//! `emit` counts the added imports once (`planAddedImports`) and puts them in the `Plan` every edit
-//! resolves against; raw bytes are never remapped.
+//! Names are written verbatim. Function and tag descriptors carry symbolic type indices; table,
+//! memory and global descriptors are complete. Old entries and padded LEBs are copied unchanged;
+//! the count is canonical. Added imports shift their space's indices; raw bytes are never remapped.
 const std = @import("std");
 const Io = std.Io;
 
@@ -32,8 +25,7 @@ pub const Entry = struct {
     desc: Desc,
 };
 
-/// What the import brings in. A function or tag descriptor names a type symbolically, so the plan
-/// can use a type it adds; the other descriptors are complete on their own.
+/// The entity an import brings in. Function/tag descriptors name a type symbolically.
 pub const Desc = union(spec.ExternalKind) {
     function: index.Type,
     table: imports.Table,
@@ -54,7 +46,7 @@ pub fn encode(
     writer: *Io.Writer,
     options: Options,
 ) EncodeError!void {
-    _ = plan; // this edit's own indices are type indices, and type indices never shift
+    _ = plan; // this edit's indices are type indices, which never shift
     // First, so a broken import section is reported before anything else.
     const counts = try Counts.of(module, options);
     const old = try readOld(module, options);
@@ -66,8 +58,7 @@ pub fn encode(
     for (self.entries) |*entry| try writeEntry(writer, entry, &counts, options);
 }
 
-/// How many imports of each kind these entries add. `emit` computes this once from the patch and
-/// passes it to every edit: the added imports shift the indices of their space.
+/// How many imports of each kind these entries add; `emit` computes this once for the plan.
 pub fn planAddedImports(self: *const AddImports) index.AddedImports {
     var result: index.AddedImports = .{};
     for (self.entries) |*entry| result.add(std.meta.activeTag(entry.desc));
@@ -107,9 +98,8 @@ fn writeName(writer: *Io.Writer, name: []const u8) EncodeError!void {
     try writer.writeAll(name);
 }
 
-/// `limits.write` can fail for the caller's data: reserved flag bits, or a 32-bit value that does
-/// not fit. Those are diagnosed here; `WriteFailed` is not, because it is the one error that may
-/// leave bytes in the writer.
+/// `limits.write` can fail for caller data: reserved flag bits or values that do not fit. Those are
+/// diagnosed here; `WriteFailed` is not, because it may leave bytes in the writer.
 fn writeLimits(writer: *Io.Writer, value: spec.Limits, options: Options) EncodeError!void {
     limits.write(value, writer) catch |err| switch (err) {
         error.UnsupportedFeature, error.Overflow => return Diagnostics.fail(
@@ -141,9 +131,8 @@ fn readOld(module: *const Module, options: Options) EncodeError!Old {
     return .{ .count = iterator.count, .entries = iterator.entries.slice(module.bytes) };
 }
 
-/// The number a type index resolves to, or the out-of-range diagnostic. Only `.input` is
-/// checked: an `.appended` or `.added_import` ordinal is the plan's to hand out, and the type
-/// section is not read here.
+/// The number a type index resolves to, or the out-of-range diagnostic. Only `.input` is checked;
+/// `.appended`/`.added_import` ordinals are the plan's to hand out.
 fn checkedTypeIndex(
     type_ref: index.Type,
     counts: *const Counts,

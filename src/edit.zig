@@ -17,9 +17,7 @@ const Options = @import("Options.zig");
 
 const spec = @import("spec.zig");
 
-/// Whatever buffer is passed to any of the `Edit` variants, is needed to be
-/// valid for the lifetime of the `Edit` instance. The `Edit` does not own
-/// the buffer, it just references it.
+/// Every buffer an `Edit` variant references must outlive the edit; the edit does not own it.
 pub const Edit = union(enum) {
     raw: Raw, // replace the whole payload with these bytes
     add_exports: AddExports,
@@ -32,8 +30,7 @@ pub const Edit = union(enum) {
 
     const Self = @This();
 
-    /// Writes the section's payload. `plan` carries what every edit needs from the whole plan:
-    /// added imports, added types and added function types. `emit` computes it once.
+    /// Writes the section payload. `plan` carries the plan-wide context `emit` computed.
     pub fn encode(
         self: *const Self,
         module: *const Module,

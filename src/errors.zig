@@ -45,10 +45,8 @@ pub const PayloadError = error{
     UnsupportedFeature,
 };
 
-/// A body, table, or custom-section edit names a target that cannot be edited: it is imported, or
-/// the plan already names it. The builder sees symbolic targets; the encoders see input indices.
-/// Both return this set, so a caller handles one vocabulary. Error sets compose, so this is no
-/// runtime wrapper.
+/// An unusable edit target: imported, or already named by the plan. The builder and encoders share
+/// one error set, so callers handle one vocabulary.
 pub const EditTargetError = error{
     DuplicateBody, // two bodies for one function
     DuplicateTable, // two replacements for one table

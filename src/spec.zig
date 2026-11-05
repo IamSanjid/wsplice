@@ -2,8 +2,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const wasm = std.wasm;
 
-/// The base opcode table: `std.wasm.Opcode`, which names the MVP instructions, the numeric ones and
-/// the prefix markers. `ExtraOpcode` fills in the core bytes it does not name.
+/// The base opcode table: `std.wasm.Opcode`, which names the MVP instructions and prefix markers.
+/// `ExtraOpcode` fills in the core bytes it does not name.
 pub const BaseOpcode = wasm.Opcode;
 pub const MiscOpcode = wasm.MiscOpcode;
 pub const SimdOpcode = wasm.SimdOpcode;
@@ -13,12 +13,12 @@ pub const version = wasm.version;
 pub const header_len = magic.len + version.len;
 pub const function_type = wasm.function_type;
 
-/// Abstract heap types. Each is one byte, and used on its own, one byte is also a complete
-/// (nullable) reference type: 0x70 is `funcref`, 0x6E is `anyref`, and so on.
+/// Abstract heap types, one byte each; used alone, a byte is also a complete nullable reference
+/// type (`0x70` is `funcref`).
 ///
-/// These are the encodings of the binary format's abstract heap type table, not type indices: read
-/// as s33 they are negative (-23 to -12), and only a non-negative s33 is a type index. That is why
-/// one byte is unambiguous here, and why a concrete type needs the prefixed form below.
+/// These are the binary format's abstract heap type encodings, not type indices: as s33 they are
+/// negative (-23 to -12). Only a non-negative s33 is a type index, which is why a concrete type
+/// needs the prefixed form.
 pub const AbstractHeapType = enum(u8) {
     exn = 0x69,
     array = 0x6A,
@@ -33,8 +33,8 @@ pub const AbstractHeapType = enum(u8) {
     nofunc = 0x73,
     noexn = 0x74,
 
-    /// The abstract heap type `byte` names, or null if it names none. These twelve are the only
-    /// single-byte heap types; a non-negative s33 is a type index, which is a different shape.
+    /// The abstract heap type `byte` names, or null if it names none; these twelve are the only
+    /// single-byte heap types.
     pub fn fromByte(byte: u8) ?AbstractHeapType {
         return std.enums.fromInt(AbstractHeapType, byte);
     }
@@ -95,17 +95,16 @@ pub const Mutability = enum(u8) {
     mutable = 0x01,
 };
 
-/// A value type: what a global holds, what a local holds, what a function takes and returns.
+/// A value type: what a global or local holds, and what a function takes and returns.
 ///
-/// The reference case is one abstract heap type, the one-byte shorthand for `ref null ht`. The
-/// prefixed forms (0x63/0x64 plus a heap type) have a different shape and are not represented: a
-/// reader that guessed their length would desync the section, and nothing here can construct one.
+/// The reference case is one abstract heap type, the shorthand for `ref null ht`. Prefixed forms
+/// have a different shape and are not represented; nothing here can construct one.
 pub const ValueType = union(enum) {
     number_or_vector: wasm.Valtype,
     reference: AbstractHeapType,
 
-    /// The type `byte` names, or null if it names no single-byte value type. `0x63` and `0x64` are
-    /// prefixes, not types, so they are null here too.
+    /// The type `byte` names, or null if it names no single-byte value type; `0x63`/`0x64` are
+    /// prefixes, not types.
     pub fn fromByte(byte: u8) ?ValueType {
         if (std.enums.fromInt(wasm.Valtype, byte)) |number_or_vector| {
             return .{ .number_or_vector = number_or_vector };
@@ -114,8 +113,7 @@ pub const ValueType = union(enum) {
         return null;
     }
 
-    /// The one byte the type is: the inverse of `fromByte` for every type it accepts, which is what
-    /// lets the reader and the writer share one mapping.
+    /// The one byte the type is; the inverse of `fromByte` for every type it accepts.
     pub fn toByte(self: ValueType) u8 {
         return switch (self) {
             .number_or_vector => |number_or_vector| @backingInt(number_or_vector),
@@ -269,7 +267,7 @@ test "by_rank is the binary section order" {
 }
 
 /// The index spaces a plan can name. `type` has no `ExternalKind`; element and data are not
-/// referenceable yet. `local` is a function body's own space: parameters first, then its locals.
+/// referenceable yet. `local` is a function body's own space: parameters first, then locals.
 pub const IndexSpace = enum { type, function, table, memory, global, tag, local };
 
 pub const ExternalKind = enum(u8) {

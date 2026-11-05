@@ -1,7 +1,5 @@
-//! At most one edit per non-custom section. An edit writes its section's whole payload, so two
-//! edits for the same section cannot be chained: a plan with two operations for one section folds
-//! them into one edit, and `setPayload` refuses a second write rather than replacing the first.
-//! Custom sections are a separate list because they repeat and have no rank.
+//! At most one edit per non-custom section: an edit writes a whole payload, so a second would
+//! replace the first. Custom sections are a separate list because they repeat and have no rank.
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -15,8 +13,7 @@ const SectionId = spec.SectionId;
 const section_id_count = spec.section_id_count;
 
 slots: [section_id_count]?Edit, // indexed by @backingInt(id); slot 0 (custom) stays null
-/// Custom-section edits are a list, not slots: custom sections repeat and have no rank. Borrowed
-/// from the builder, or set directly by a hand-built patch.
+/// Custom edits are a list, not slots; borrowed from the builder or set by the caller.
 custom: []const CustomEdit = &.{},
 
 const Patch = @This();
@@ -24,8 +21,7 @@ const Patch = @This();
 pub const empty: Patch = .{ .slots = @splat(null) };
 
 comptime {
-    // Patch is passed around by pointer, but it should stay cheap to copy.
-    // If a future Edit variant makes this fail, shrink the variant (borrow, don't embed).
+    // Keep Patch cheap to copy; shrink an Edit variant rather than embed it.
     assert(@sizeOf(Patch) <= 1024);
 }
 
@@ -35,15 +31,15 @@ pub fn setPayload(self: *Patch, id: SectionId, edit: Edit) PatchError!void {
     self.assertInvariants();
 
     const slot = &self.slots[@backingInt(id)];
-    if (slot.* != null) return error.SectionAlreadyPatched; // the first edit stays
+    if (slot.* != null) return error.SectionAlreadyPatched;
 
     slot.* = edit;
     assert(self.slots[@backingInt(id)] != null);
     self.assertInvariants();
 }
 
-/// Asserts `id != .custom`. The edit is borrowed: the pointer stays valid until this slot is set
-/// again, and the patch must outlive it.
+/// Asserts `id != .custom`. The edit is borrowed and valid until this slot changes; the patch must
+/// outlive it.
 pub fn get(self: *const Patch, id: SectionId) ?*const Edit {
     assert(id != .custom);
     self.assertInvariants();

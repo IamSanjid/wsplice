@@ -1,4 +1,4 @@
-//! Reader for the `limits` structure that table and memory types share.
+//! Reads and writes the `limits` structure that table and memory types share.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -10,14 +10,11 @@ const EncodeError = errors.EncodeError;
 const PayloadError = errors.PayloadError;
 const fromCursor = errors.fromCursor;
 
-/// Reads a flags byte, then `min`, then `max` if `has_max` is set. The values are `u64` LEBs when
-/// `is_64bit` is set and `u32` LEBs otherwise. `max` is 0 when the input has none: look at
-/// `flags.has_max`, never at `max`, to know whether one was there.
+/// Reads `flags`, `min`, and `max` if `has_max`; 64-bit limits use u64 LEBs. Absent `max` is 0, so
+/// check `flags.has_max`, not `max`. Unknown flag bits are `UnsupportedFeature`.
 ///
-/// Reads the structure only: it does not check `min <= max`, that a shared memory has a maximum,
-/// or any engine limit. That is validation, and `wasm-validate` does it.
-///
-/// A failed read leaves the cursor where it was.
+/// Structural validation (`min <= max`, shared-memory rules, engine limits) is external. A failed
+/// read restores the cursor.
 pub fn read(cursor: *Cursor) PayloadError!spec.Limits {
     const start = cursor.pos;
     errdefer cursor.pos = start;
@@ -44,13 +41,8 @@ pub fn read(cursor: *Cursor) PayloadError!spec.Limits {
     return result;
 }
 
-/// Writes a `limits` structure: the flags byte, then `min`, then `max` if `has_max` is set. Values
-/// are `u64` LEBs when `is_64bit` is set and `u32` LEBs otherwise, so a 32-bit value that does not
-/// fit is `Overflow`. Reserved flag bits are `UnsupportedFeature`, not written through: `read`
-/// would refuse them.
-///
-/// Like `read`, this writes the structure only. It does not check `min <= max`, that a shared
-/// memory has a maximum, or any engine limit; that is validation, and `wasm-validate` does it.
+/// Writes `flags`, `min`, and `max` if `has_max`; 32-bit limits refuse values that do not fit, and
+/// reserved flags are `UnsupportedFeature`. Structural validity is external.
 pub fn write(limits: spec.Limits, writer: *Io.Writer) EncodeError!void {
     if (limits.flags.reserved != 0) return error.UnsupportedFeature;
 

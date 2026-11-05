@@ -1,12 +1,7 @@
-//! Append globals to the global section; creates the section if the module has none.
+//! Appends globals, creating the global section when absent.
 //!
-//! A global is a global type and a constant expression. The new ones are re-encoded from typed
-//! values, the old ones are copied byte for byte, so a padded LEB inside an old initializer
-//! survives unchanged while the count becomes canonical.
-//!
-//! Nothing here checks that an initializer produces its declared type, or that a `global.get`
-//! smuggled through `Expr.raw` names an immutable import: that is validation, and `wasm-validate`
-//! does it.
+//! New globals are re-encoded; old entries are copied byte for byte, padded LEBs included. Nothing
+//! checks that an initializer produces its declared type: `wasm-validate` does.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -19,16 +14,13 @@ const Plan = @import("../Plan.zig");
 const globals = @import("../payload/globals.zig");
 const const_expr = @import("../payload/const_expr.zig");
 
-/// One global to add. Its initializer borrows whatever bytes it refers to, so it must stay alive
-/// until `emit` returns.
+/// One global to add. The initializer borrows its bytes until `emit`.
 pub const Global = struct {
-    /// The declared global type: a value type and a mutability.
     global_type: globals.Type,
     init: const_expr.Expr,
 };
 
-/// Caller-owned. The slice, and everything the initializers borrow, must stay alive until `emit`
-/// returns.
+/// Caller-owned; the slice and everything the initializers borrow must outlive `emit`.
 entries: []const Global,
 
 const AddGlobals = @This();

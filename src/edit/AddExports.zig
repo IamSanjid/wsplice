@@ -1,10 +1,7 @@
-//! Append entries to the export section; creates the section if the module has none.
+//! Appends exports, creating the export section when absent.
 //!
-//! An entry names an `index.Target`: a kind, and either an index in the input module, the n-th
-//! entity this plan appends, or the n-th import this plan adds. The target becomes a number here,
-//! at emit time, because this is the first moment the input's index space and the plan's added
-//! imports are both known (`Counts`, `AddedImports`). The plan's own counters never travel with the
-//! patch, so the same patch can be emitted against any input of the right shape.
+//! Targets are resolved here: this is where the input's counts and the plan's added imports first
+//! meet. The patch carries no counters, so it stays independent of the input it is emitted against.
 const std = @import("std");
 const Io = std.Io;
 
@@ -39,7 +36,6 @@ pub fn encode(
     const counts = try Counts.of(module, options);
     const old = try readOld(module, options);
 
-    // Check every new entry, and count them.
     const old_payload = module.payloadCursor(.@"export");
     var count_new: u32 = 0;
     for (self.entries, 0..) |*entry, ordinal| {
@@ -48,7 +44,6 @@ pub fn encode(
     }
     const count_total = std.math.add(u32, old.count, count_new) catch return error.Overflow;
 
-    // Everything is valid: write.
     try writer.writeLeb128(count_total); // canonical count, even if the old one was padded
     try writer.writeAll(old.entries); // old entries are copied verbatim, not re-encoded
     for (self.entries) |*entry| {
@@ -86,10 +81,9 @@ fn checkedIndex(
     options: Options,
 ) EncodeError!u32 {
     const kind = entry.target.kind();
-    const layout = index.Layout.of(counts, kind, &plan.added_imports);
-    // Checked here rather than from `resolve`'s error, because the diagnostic wants the number that
-    // was used. Only an `.input` index is checked: an `.appended` or `.added_import` ordinal is the
-    // plan's to hand out, and `wasm-validate` is the gate for it.
+    const layout = index.Layout.of(kind, counts, &plan.added_imports);
+    // Checked here so the diagnostic can name the number used. Only `.input` can fail; plan
+    // ordinals are the plan's to hand out.
     if (entry.target.inputIndex()) |used| {
         if (used >= layout.input_total) {
             return Diagnostics.fail(options.diag, error.IndexOutOfRange, .{

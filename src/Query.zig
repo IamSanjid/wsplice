@@ -1,6 +1,5 @@
-//! Reading a module: function bodies, types, signatures, table types, custom sections, and where
-//! an entity comes from. Queries borrow the module's bytes, so the module must outlive them, and
-//! they never allocate.
+//! Reads a module without allocating: bodies, types, signatures, table types, custom sections, and
+//! origins. Query values borrow the module.
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -60,8 +59,8 @@ pub fn functionType(self: *const Query, function: u32) PayloadError!?index.Type 
     return definedType(self, function - imported);
 }
 
-/// The parameters and results of function `function`, imported or defined; null for an absent
-/// function, or when its type index is not in the input's type section.
+/// The parameters and results of a function, imported or defined; null when absent or when its
+/// type index is not in the type section.
 pub fn functionSignature(self: *const Query, function: u32) PayloadError!?types.Signature {
     const function_type = (try self.functionType(function)) orelse return null;
     const type_index = switch (function_type) {
@@ -83,9 +82,8 @@ pub fn tableType(self: *const Query, table: u32) PayloadError!?tables.Type {
 /// Where an entity in an index space comes from.
 pub const Origin = enum { imported, defined };
 
-/// Everything a plan usually asks about one function. `body` is null for an imported function, or
-/// a defined function with no code entry; `type_ref`/`signature` are null for an inconsistent
-/// input. `functionBody`, `functionType` and `functionSignature` stay available for one-fact reads.
+/// Everything a plan usually asks about one function. `body` is null for an imported function or a
+/// defined function with no code entry; `type_ref`/`signature` are null for an inconsistent input.
 pub const FunctionInfo = struct {
     origin: Origin,
     type_ref: ?index.Type,
@@ -99,8 +97,8 @@ pub const TableInfo = struct {
     table_type: ?tables.Type,
 };
 
-/// The function's origin and, when available, its type, signature and body. A plan that needs
-/// several facts should use this rather than several targeted calls.
+/// The function's origin and, when available, its type, signature and body. Prefer this to several
+/// targeted calls when a plan needs more than one fact.
 pub fn functionInfo(self: *const Query, function: u32) PayloadError!?FunctionInfo {
     if (function >= self.counts.total(.function)) return null;
     const origin: Origin = if (function < self.counts.importedCount(.function))
@@ -123,8 +121,8 @@ pub fn functionInfo(self: *const Query, function: u32) PayloadError!?FunctionInf
     };
 }
 
-/// A custom section as the input has it. `name` and `data` are borrowed from the module and are
-/// raw bytes; `data` is everything after the name vector.
+/// A custom section as the input has it. `name` and `data` are borrowed raw bytes; `data` follows
+/// the name vector, and `section` is the frame.
 pub const CustomSection = struct {
     name: []const u8,
     data: []const u8,
@@ -152,8 +150,8 @@ pub fn customSections(self: *const Query) CustomSectionIter {
     return .{ .module = self.module, .sections = self.module.iterator() };
 }
 
-/// The first custom section with exactly `name`, in file order; null when there is none. Names are
-/// raw bytes, and duplicate names are legal; use `customSections` when all occurrences matter.
+/// The first custom section with exactly `name`, in file order; null when there is none. Use
+/// `customSections` when all occurrences matter.
 pub fn customSection(self: *const Query, name: []const u8) PayloadError!?CustomSection {
     var iterator = self.customSections();
     while (try iterator.next()) |section| {

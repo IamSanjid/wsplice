@@ -1,6 +1,4 @@
-//! How many entities each index space has: imported ones first, then the module's own.
-//! These are the numbers the module *declares*. Whether a section's contents match its count is
-//! validation, and `wasm-validate` does that.
+//! Declared entity counts per index space; whether section contents match is validation's job.
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -18,7 +16,7 @@ const imports = @import("imports.zig");
 /// Indexed by `@backingInt(kind)`.
 imported: [kind_count]u32,
 defined: [kind_count]u32,
-/// The type section's declared count. Types are an index space but not an `ExternalKind`, and they
+/// The type section's declared count. Types are an index space but not an `ExternalKind`, and
 /// cannot be imported, so there is no imported half.
 types: u32,
 
@@ -26,8 +24,7 @@ const Counts = @This();
 
 const kind_count = @typeInfo(ExternalKind).@"enum".field_names.len;
 
-/// Reads the import section (every entry) and the first LEB of each defined section.
-/// No allocation; one pass over the import section plus six small reads.
+/// Reads the import section and each defined section's count LEB. No allocation.
 pub fn of(module: *const Module, options: Options) PayloadError!Counts {
     var result: Counts = .{ .imported = @splat(0), .defined = @splat(0), .types = 0 };
     // First, so a broken import section is reported before anything else.
@@ -44,14 +41,14 @@ pub fn of(module: *const Module, options: Options) PayloadError!Counts {
 pub fn total(self: *const Counts, kind: ExternalKind) u32 {
     const kind_index = @backingInt(kind);
     const sum: u64 = self.imported[kind_index] + self.defined[kind_index];
-    // For a Counts made by `of` this cannot fail: an import entry takes at least 4 bytes and a
-    // defined entity at least 1, in disjoint sections of a module under 4 GiB.
+    // For a Counts made by `of` this cannot fail: imports take at least 4 bytes and defined
+    // entities at least 1, in disjoint sections of a module under 4 GiB.
     assert(sum <= std.math.maxInt(u32));
     return @intCast(sum);
 }
 
-/// How many of this space's entities are imported. A defined entity's position in its section is
-/// its index minus this count.
+/// How many of this space's entities are imported; a defined entity's section position is its
+/// index minus this count.
 pub fn importedCount(self: *const Counts, kind: ExternalKind) u32 {
     return self.imported[@backingInt(kind)];
 }

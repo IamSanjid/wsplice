@@ -18,7 +18,7 @@ pub const Entry = struct {
     data: []const u8,
 };
 
-/// Reads one custom section payload. `bytes` is the whole module; `payload` is the section payload.
+/// Reads one custom section payload. `bytes` is the module; `payload` is its payload window.
 pub fn read(bytes: []const u8, payload: Span) PayloadError!Entry {
     assert(payload.start <= payload.end);
     assert(payload.end <= bytes.len);

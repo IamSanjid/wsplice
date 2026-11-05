@@ -10,8 +10,7 @@ const spec = @import("spec.zig");
 const SectionId = spec.SectionId;
 const section_id_count = spec.section_id_count;
 
-/// Byte range into the module buffer. Absolute offsets, `end` exclusive.
-/// Invariant: start <= end.
+/// A byte range in the module: absolute, end-exclusive; `start <= end`.
 pub const Span = struct {
     start: u32,
     end: u32,
@@ -29,13 +28,12 @@ pub const Span = struct {
     }
 };
 
-/// One section as it sits in the file.
-/// `start` is the offset of the id byte, `payload` follows the size LEB.
-/// Invariant: start < payload.start <= payload.end.
+/// One section as it sits in the file. `start` is the id byte; `payload` follows the size LEB.
+/// Invariant: `start < payload.start <= payload.end`.
 pub const Section = struct {
     id: SectionId,
     start: u32,
-    /// The payload of the section. (Id byte + size bytes are not included)
+    /// The payload of the section; the id and size bytes are not included.
     payload: Span,
 
     /// The whole section: id byte through the last payload byte.
@@ -45,8 +43,8 @@ pub const Section = struct {
     }
 };
 
-/// Bytes before a payload: the id byte plus a canonical size LEB. Computed by the same encoder the
-/// writer uses, so the two cannot disagree.
+/// Bytes before a payload: the id byte plus a canonical size LEB, from the same encoder the writer
+/// uses.
 pub fn headerLen(payload_len: u32) u32 {
     var bytes: [5]u8 = undefined; // a u32 LEB128 is at most 5 bytes
     var writer: Io.Writer = .fixed(&bytes);

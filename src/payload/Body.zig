@@ -1,22 +1,11 @@
-//! The assembler side of a function body: a locals policy, a mode, and the instructions wsplice can
-//! build.
+//! The assembler side of a function body: locals policy, mode, and instructions wsplice can write.
 //!
-//! Each `Instr` variant is one instruction and carries the operands that would otherwise be left
-//! in its bytes. Adding a variant is the whole extension procedure: `encodeInstr` switches over the
-//! union exhaustively, so a new variant does not compile until it is handled, and nothing else has
-//! to change. `Instr.raw` is the escape hatch for everything not modeled yet.
+//! Each `Instr` carries its operands, so the bytes are produced rather than echoed; `Instr.raw` is
+//! the escape hatch. `operators.zig` is the reader: `Opcode` reports what was found, `Instr` what
+//! will be written. `encodeWith` writes the terminating `end`; validation is external.
 //!
-//! This is the opposite trade from `operators.zig`. That reader reports every instruction
-//! as an `Opcode` and a byte span and leaves the operands to the caller; here there is no span to
-//! echo, because an operand is a value, so the bytes are produced rather than copied. Rule of
-//! thumb: `operators.Opcode` is what a reader found, `Body.Instr` is what a writer will produce.
-//!
-//! The expression's terminating `end` is written by `encodeWith`, so no mode and no `Instr` is one.
-//! Nothing checks that the instructions type-check or leave the stack right: that is validation,
-//! and `wasm-validate` does it.
-//!
-//! The body owns none of its bytes: the input body, the locals, the instructions, and everything
-//! they borrow (raw spans, the rewriter's context) must stay alive until `emit` returns.
+//! The body owns none of its bytes: inputs, instructions, and rewriter contexts must outlive
+//! `emit`.
 const std = @import("std");
 const Io = std.Io;
 const assert = std.debug.assert;
@@ -37,10 +26,9 @@ const operators = @import("operators.zig");
 
 /// One instruction wsplice can assemble.
 pub const Instr = union(enum) {
-    /// `call f`: calls `f`, and whatever it returns becomes the values of the call.
+    /// `call f`.
     call: index.Function,
-    /// `call_indirect (type t) (table tbl)`: the arguments, then the table element index, are
-    /// pushed before it, so the element index is the last value on the stack.
+    /// `call_indirect type table`; the table element index is the last operand.
     call_indirect: struct {
         type: index.Type,
         table: index.Table,
@@ -53,17 +41,13 @@ pub const Instr = union(enum) {
     f32_const: f32,
     /// `f64.const value`, written as its IEEE 754 bits in little-endian order.
     f64_const: f64,
-    /// `local.get local`: a function's local space is its parameters first, then the locals this
-    /// body declares; parameters are in the function's type, not in the body. The assembler does
-    /// not read the type: it checks the index only when a `Body.Owner` supplies the parameter
-    /// count. `Instr.raw` bytes are never checked.
+    /// `local.get local`: parameters come first, then declared locals. Checked only when `Owner`
+    /// supplies the parameter count; raw bytes are never checked.
     local_get: u32,
     /// `global.get global`
     global_get: index.Global,
-    /// Bytes emitted as they are: the escape hatch, and the only way to write an instruction
-    /// without a variant above. They are not inspected, so nothing in them can be relabeled or
-    /// remapped; `block`/`end` balance is the caller's responsibility, and the bytes must not
-    /// include the body's terminating `end`, which `encodeWith` adds.
+    /// Bytes written as-is, never parsed or remapped. `block`/`end` balance is the caller's, and
+    /// these bytes must not include the body's final `end`.
     raw: []const u8,
 };
 
@@ -73,11 +57,11 @@ pub const LocalDecl = struct {
     valtype: spec.ValueType,
 };
 
-/// What the body declares for its locals. Parameters are in the function's type, not here. The
-/// input body's vector is raw bytes (`code.Entry.locals`), so keeping it is a copy, not a decode.
+/// The body's declared locals; parameters live in the function type. The input's vector is raw
+/// bytes (`code.Entry.locals`), so keeping it is a copy, not a decode.
 pub const Locals = union(enum) {
-    /// Keep the input body's vector as it is. A body with no input body has nothing to keep, so
-    /// this is `error.NoInputBody` there.
+    /// Keep the input body's vector. A body with no input body has nothing to keep
+    /// (`error.NoInputBody`).
     keep,
     /// Replace it with exactly these runs: one run per declaration, no merging.
     replace: []const LocalDecl,
@@ -87,29 +71,26 @@ pub const Locals = union(enum) {
     raw: []const u8,
 };
 
-/// What the body does with its instructions. The terminating `end` belongs to none of these:
-/// `encodeWith` writes it after them.
+/// What the body does with its instructions. `encodeWith` writes the terminating `end` after them.
 pub const Mode = union(enum) {
     /// Write these instructions.
     replace: []const Instr,
     /// Run a caller's code over the input body's instructions.
     rewrite: Rewriter,
-    /// Instruction bytes without the final `end`, written as they are. They are not parsed, so
-    /// opcodes the reader refuses can still be copied, and their indices are never remapped; they
-    /// must be self-contained and depth-neutral, as `Instr.raw` must be.
+    /// Instruction bytes without the final `end`. Not parsed, so opcodes the reader refuses can be
+    /// copied, and indices are never remapped; must be self-contained and depth-neutral.
     raw: []const u8,
 };
 
-/// The body this one replaces. `keep` copies instruction spans out of `body.bytes`, because `Op`
-/// offsets are absolute into the module; `locals` and `body` are what `.keep` locals and `.rewrite`
-/// are relative to.
+/// The body this one replaces. `keep` copies instruction spans from `body.bytes` because `Op`
+/// offsets are absolute; `locals` and `body` are what `.keep` locals and `.rewrite` work from.
 pub const Input = struct {
     locals: []const u8,
     body: Cursor,
 };
 
-/// The function a body belongs to: its final index in the emitted module, and its parameter count.
-/// `parameter_count` null means the count is not known, so local indices are not checked.
+/// The function a body belongs to: its final index and its parameter count. A null count leaves
+/// local indices unchecked.
 pub const Owner = struct {
     emitted_function: u32,
     parameter_count: ?u32,
@@ -119,10 +100,9 @@ pub const Owner = struct {
 ///
 ///     pub fn rewrite(self: *const T, body: operators.BodyIter, out: *Out) EncodeError!void
 ///
-/// and `from(&value)` stores one context pointer and one function pointer. The context must outlive
-/// `emit` and stay at a stable address: a value local to a loop iteration is overwritten by the
-/// next iteration before `emit`. Allocate it in an arena or keep it in outer storage. The callback
-/// must be deterministic: a frame is measured and then written, and emit runs both twice.
+/// `from(&value)` stores a context pointer and a function pointer. The context must outlive `emit`
+/// at a stable address (a loop-local is overwritten before emit), and the callback must be
+/// deterministic because emit runs it twice.
 pub const Rewriter = struct {
     context: *const anyopaque,
     function: *const fn (
@@ -156,9 +136,8 @@ pub const Rewriter = struct {
     }
 };
 
-/// What each body's instructions are written through. It is made fresh for each body per pass, so
-/// validation can land in `write`/`keep` without changing a callback. A rewriter only needs
-/// `write`/`keep`; the other fields are the encoder's context.
+/// What each body's instructions are written through, made fresh per body per pass. A rewriter only
+/// needs `write`/`keep`; the other fields are encoder context.
 pub const Out = struct {
     writer: *Io.Writer,
     /// The input module's bytes: `Op` offsets are absolute, so `keep` slices these.
@@ -166,7 +145,7 @@ pub const Out = struct {
     counts: *const Counts,
     /// The plan's added imports and types; indices resolve against it.
     plan: *const Plan,
-    /// The owning function's emitted index, for diagnostics; null when the body has no owner.
+    /// The owning function's final index, for diagnostics; null when the body has no owner.
     emitted_function: ?u32,
     /// One past the last valid local index; null when the bound is unknown.
     local_limit: ?u32,
@@ -177,8 +156,7 @@ pub const Out = struct {
         for (instructions) |instruction| try encodeInstr(self, instruction);
     }
 
-    /// Writes `op` exactly as it is in the input body: the same bytes, the same indices, padded
-    /// LEBs included.
+    /// Writes `op` exactly as it is in the input: same bytes, same indices, padded LEBs included.
     pub fn keep(self: *Out, op: operators.Op) EncodeError!void {
         assert(op.at <= op.end);
         assert(op.end <= self.bytes.len);
@@ -192,11 +170,9 @@ mode: Mode,
 
 const Body = @This();
 
-/// Writes the code entry's body of a function that has no input body: the locals vector, the
-/// instructions, and the final `end`. Emit runs this twice, so it must be pure. A body on its own
-/// has no plan imports: `.added_import` and the added-import part of `.input` resolve as if the
-/// plan added none. It also has no owner, so local indices are not checked. `SetBodies` passes the
-/// plan's added imports and the owning function to `encodeWith`.
+/// Writes a body with no input body: locals, instructions, and the final `end`. Emit runs this
+/// twice, so it must be pure. With no plan or owner, added imports and local bounds are absent;
+/// `SetBodies` passes both to `encodeWith`.
 pub fn encode(
     self: *const Body,
     module: *const Module,
@@ -208,12 +184,10 @@ pub fn encode(
     try self.encodeWith(&counts, &plan, null, null, writer, options);
 }
 
-/// `encode` with counts the caller already has, and with the input body it replaces. `input` null
-/// means there is no input body: `.keep` locals is `NoInputBody`, `.append` writes only its own
-/// declarations, and `.rewrite` gets an empty instruction stream. `plan` carries the plan's added
-/// imports, types and functions, which is what makes an `.input`, `.appended` or `.added_import`
-/// index resolve. `owner` supplies the parameter count for local-index bounds; null skips the
-/// check.
+/// `encode` with counts already in hand, plus the input body this one replaces. `input` null means
+/// no input body: `.keep` locals is `NoInputBody`, `.append` writes only its own declarations, and
+/// `.rewrite` sees an empty instruction stream. `plan` supplies the added imports, types and
+/// functions symbolic indices resolve against. `owner` supplies the local bound; null skips it.
 pub fn encodeWith(
     self: *const Body,
     counts: *const Counts,
@@ -250,8 +224,7 @@ pub fn encodeWith(
     try writer.writeByte(@backingInt(spec.BaseOpcode.end)); // the expression's terminator
 }
 
-/// One past the last valid local index, or null when the count is unknown or the sum cannot fit
-/// in a u32 (in which case no u32 local index can exceed it).
+/// One past the last valid local index, or null when the count is unknown or the sum exceeds u32.
 fn localLimit(owner: ?Owner, declared_locals: u64) ?u32 {
     const function = owner orelse return null;
     const parameters = function.parameter_count orelse return null;
@@ -294,7 +267,7 @@ fn encodeCall(out: *Out, function: index.Function) EncodeError!void {
         out,
         function,
         .function,
-        index.Layout.of(out.counts, .function, &out.plan.added_imports),
+        index.Layout.of(.function, out.counts, &out.plan.added_imports),
     ));
 }
 
@@ -310,7 +283,7 @@ fn encodeCallIndirect(out: *Out, call_type: index.Type, table: index.Table) Enco
         out,
         table,
         .table,
-        index.Layout.of(out.counts, .table, &out.plan.added_imports),
+        index.Layout.of(.table, out.counts, &out.plan.added_imports),
     ));
 }
 
@@ -346,13 +319,12 @@ fn encodeGlobalGet(out: *Out, global: index.Global) EncodeError!void {
         out,
         global,
         .global,
-        index.Layout.of(out.counts, .global, &out.plan.added_imports),
+        index.Layout.of(.global, out.counts, &out.plan.added_imports),
     ));
 }
 
-/// The number an index resolves to, or the out-of-range diagnostic for the one case that fails.
-/// Only `.input` is checked: an `.appended` or `.added_import` ordinal is the plan's to hand out,
-/// and `wasm-validate` is the gate for it.
+/// The number an index resolves to, or the out-of-range diagnostic. Only `.input` is checked;
+/// plan ordinals are the plan's to hand out.
 fn checkedIndex(
     out: *Out,
     reference: anytype,
@@ -380,8 +352,7 @@ fn checkedIndex(
     return reference.resolve(layout);
 }
 
-/// Checks a local index against the precomputed bound. A body with no owner, or one whose
-/// parameter count is unknown, has no bound and leaves it unchecked.
+/// Checks a local index against the precomputed bound; no bound means no check.
 fn checkLocal(out: *Out, local: u32) EncodeError!void {
     const limit = out.local_limit orelse return;
     if (local >= limit) {
@@ -397,14 +368,12 @@ fn checkLocal(out: *Out, local: u32) EncodeError!void {
     }
 }
 
-/// The instruction stream of a body with nothing to rewrite: just the terminator, so the iterator
-/// can end at it as it does on any other body.
+/// The instruction stream of a body with nothing to rewrite: just the terminator.
 const empty_expression = [_]u8{0x0B};
 const empty_body: Cursor = .{ .bytes = &empty_expression, .pos = 0, .end = 1 };
 
-/// Writes the locals vector the body asks for and returns how many locals it declares. `input` is
-/// the input body's vector and expression, relative to which `.keep` and `.append` work; null means
-/// there is no input body.
+/// Writes the locals vector the body asks for and returns how many locals it declares. `input`
+/// supplies the vector `.keep`/`.append` work from; null means there is no input body.
 fn encodeLocals(
     writer: *Io.Writer,
     locals: Locals,
@@ -449,8 +418,8 @@ fn declaredLocalsCount(declarations: []const LocalDecl) EncodeError!u64 {
     return total;
 }
 
-/// The number of locals a `vec(locals)` declares, parsing and validating it. Used for the raw and
-/// kept vectors, which are written verbatim and otherwise would not be decoded.
+/// The number of locals a `vec(locals)` declares, parsing and validating it. Used for raw and kept
+/// vectors, which are written verbatim and otherwise would not be decoded.
 fn localsCount(bytes: []const u8) EncodeError!u64 {
     var cursor = Cursor.init(bytes) catch return error.Overflow;
     const runs = cursor.readUleb(u32) catch |err| return fromCursor(err);
@@ -479,8 +448,8 @@ fn writeDeclarations(writer: *Io.Writer, declarations: []const LocalDecl) Encode
     try writeDeclarationBytes(writer, declarations);
 }
 
-/// The input's runs, then the new ones. Only the run count is rewritten: the input's run bytes are
-/// copied, so a padded LEB survives and equal runs on both sides stay separate.
+/// The input's runs, then the new ones. Only the run count is rewritten; the input's run bytes are
+/// copied, so padded LEBs survive and equal runs on both sides stay separate.
 fn appendDeclarations(
     writer: *Io.Writer,
     input: ?Input,

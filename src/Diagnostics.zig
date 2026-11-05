@@ -1,5 +1,4 @@
-//! Where the first failure happened. Plain data owned by the caller, filled in by `record`.
-//! It adds context to a returned error and never replaces it.
+//! The first failure, as plain data owned by the caller and recorded by `record`/`fail`.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -7,11 +6,10 @@ const Io = std.Io;
 const SectionId = @import("spec.zig").SectionId;
 const IndexSpace = @import("spec.zig").IndexSpace;
 
-err: ?anyerror = null, // set => a failure was recorded; the same error that was returned
+err: ?anyerror = null, // set means a failure was recorded and returned
 section: ?SectionId = null,
 offset: ?u32 = null,
-/// The owning function's index in the emitted module: a locator, like `section` and `offset`, not
-/// error data. Null when the failure is not in a body.
+/// The owning function's final index, a locator like `section`/`offset`; null outside a body.
 function: ?u32 = null,
 detail: Detail = .none,
 name_truncated: bool = false,
@@ -21,15 +19,14 @@ name_buf: [name_len_max]u8 = @splat(0),
 /// The error's numbers, not its location: `Where` carries the section, offset and owning function.
 pub const Detail = union(enum) {
     none,
-    /// A number outside the range it must be in. `space` is the index space, `value` is what was
-    /// used, and `limit` is how many exist, so the valid values are 0..limit-1.
+    /// An index outside its space; valid values are 0..limit-1.
     out_of_range: struct {
         space: IndexSpace,
         value: u32,
         limit: u32,
     },
-    /// An added function without a body, by the ordinal `Builder.addFunction` returned. Plan-time
-    /// failures have no input section or offset; this is the entity they are about.
+    /// An added function without a body, by its appended ordinal. Plan-time failures have no input
+    /// location; this is the entity they are about.
     missing_body: struct {
         ordinal: u32,
     },
@@ -51,8 +48,7 @@ comptime {
 pub const Where = struct {
     section: ?SectionId = null,
     offset: ?u32 = null,
-    /// The owning function's index in the emitted module: a locator, like `section` and `offset`,
-    /// not error data. Null when the failure is not in a body.
+    /// The owning function's final index, a locator like `section`/`offset`; null outside a body.
     function: ?u32 = null,
     detail: Detail = .none,
     /// A name from the plan (e.g. an export): copied, truncated to `name_len_max`.
@@ -81,9 +77,8 @@ pub fn record(maybe: ?*Diagnostics, err: anyerror, where: Where) void {
     self.assertInvariants();
 }
 
-/// Records the failure and returns the same error, so a failure site reads:
-///   return Diagnostics.fail(ctx.diag, error.IndexOutOfRange, .{ .section = .code });
-/// The recorded error and the returned error can't drift apart.
+/// Records `err` and returns it, so a failure site reads:
+///     return Diagnostics.fail(ctx.diag, error.IndexOutOfRange, .{ .section = .code });
 pub fn fail(maybe: ?*Diagnostics, err: anytype, where: Where) @TypeOf(err) {
     comptime assert(@typeInfo(@TypeOf(err)) == .error_set);
     record(maybe, err, where);

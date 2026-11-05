@@ -41,10 +41,10 @@ name buffer), so `Detail` grows with enums and numbers, not strings. A plan-time
 builder's `patchWith`) has no input location; its detail names the added function instead.
 
 `Detail` is error-shaped, not error-specific: an index outside a space is `out_of_range` with the
-space, value and limit — including plan-time failures, where the plan's own list is the limit.
-`missing_body` is the one exception: the added function exists, only its body does not, so no range
-describes it; it stays a narrow variant instead of a speculative generic "missing entity". A locator
-(which function's body an error came from) belongs on `Diagnostics`/`Where` beside section and
+space, value and limit — including plan-time failures, where the plan's own list is the limit. Two
+narrow variants do not describe a range: `missing_body` (the added function exists, only its body
+does not) and `custom_section` (the selector occurrence; the custom name is in `Where.name`). A
+general locator, such as the owning function, belongs on `Diagnostics`/`Where` beside section and
 offset, not in `Detail`.
 
 ## Reading instructions vs assembling them
@@ -378,10 +378,11 @@ src/custom/apply.zig      emit-side matching, measuring and writing
 src/custom/dylink.zig     dylink.0 codec
 ```
 
-`custom/edit.zig` and `custom/apply.zig` are namespaces, so they are snake_case. `edit.zig` stays
-untouched: its `Edit` union is one payload for one `SectionId`, while a custom edit is a repeatable
-list of borrowed sources in `Patch.custom`. Putting custom edits in `edit.zig` would either give
-custom sections fake slots or force every section edit to carry custom state.
+`custom/edit.zig` and `custom/apply.zig` are namespaces, so they are snake_case. `edit.zig` remains
+the one-payload-per-section edit: its `Edit` union is one payload for one `SectionId`, while a
+custom edit is a repeatable list of borrowed sources in `Patch.custom`. Putting custom edits in
+`edit.zig` would either give custom sections fake slots or force every section edit to carry custom
+state.
 
 `custom/apply.zig` owns the custom rules: matching selectors, start/end placement, measuring the
 replacement size, writing replacements, and custom diagnostics. `emit.zig` only walks sections and
@@ -481,10 +482,10 @@ sections; a section whose name no edit targets skips the occurrence scan entirel
 validation and occurrence counting are still `O(custom sections × input edits)` in the worst case,
 which is deliberate: building a name/occurrence index would require allocation or caller-owned
 storage, and custom sections are normally a handful. A byte source computes its length
-arithmetically; a streaming source is run for measurement and again for the write-side length and
-data, so a rewriter must be deterministic and should be cheap. If custom-section counts ever become
-large, the next step is an optional plan-time index or caller-provided resolver, not an allocation
-inside `emit`.
+arithmetically; a streaming source runs once for measurement and twice while writing (the section
+length, then the data), so a rewriter must be deterministic and cheap. If custom-section counts ever
+become large, the next step is an optional plan-time index or caller-provided resolver, not an
+allocation inside `emit`.
 
 ### Dylink
 
@@ -495,10 +496,11 @@ data ::= subsection*
 subsection ::= kind:u8 size:u32 payload:bytes
 ```
 
-Known kinds are `1` mem_info, `2` needed, `3` export_info, and `4` import_info. `mem_info` is four
-LEB u32s: `memory_size`, `memory_alignment_log2`, `table_size`, `table_alignment_log2`. The kind is a
-non-exhaustive `enum(u8)` ending in `_`, so a new kind only adds an enum field and switch branch;
-unknown kinds are skipped by `read` and copied byte-for-byte by `Update`.
+The format defines kinds `1` mem_info, `2` needed, `3` export_info, and `4` import_info. This codec
+models `1` and `2`; `3`, `4`, and unknown kinds are opaque: `read` skips them and `Update` copies
+them byte-for-byte. `mem_info` is four LEB u32s: `memory_size`, `memory_alignment_log2`,
+`table_size`, `table_alignment_log2`. The kind is a non-exhaustive `enum(u8)` ending in `_`, so a
+new modeled kind is one field and one switch branch.
 
 `read` also validates `needed` and exposes it as a borrowed view:
 
@@ -512,8 +514,8 @@ pub const Needed = struct {
 
 `NeededIter.next` yields borrowed names and reports trailing bytes. `Needed.encoded` is the exact
 vector payload, so it can be copied without re-encoding. `count` and `iterator` parse the first LEB
-on demand, so the view has no derived state to drift. Duplicate needed subsections and malformed
-vectors are payload errors; duplicate mem_info is `InvalidValue`.
+on demand, so the view has no derived state to drift. Duplicate needed and mem_info subsections are
+`InvalidValue`; a malformed needed vector is a payload error.
 
 Needed edits use one union for both creation and update:
 
@@ -620,8 +622,8 @@ threading `Options` through every builder call would buy nothing.
 
 ```zig
 const wrapper_type = try builder.addType(allocator, .{
-    .params = &.{.{ .number_or_vector = .i32 }},
-    .results = &.{.{ .number_or_vector = .i32 }},
+    .params = .{ .typed = &.{.{ .number_or_vector = .i32 }} },
+    .results = .{ .typed = &.{.{ .number_or_vector = .i32 }} },
 });
 const wrapper = try builder.addFunction(allocator, wrapper_type);
 ```
@@ -682,7 +684,7 @@ const plan = Plan.fromPatch(&patch);
 
 const target_final = try target.resolve(&counts, &plan.added_imports);
 const function_final = try added_function.resolve(
-    index.Layout.of(&counts, .function, &plan.added_imports),
+    index.Layout.of(.function, &counts, &plan.added_imports),
 );
 const type_final = try added_type.resolve(index.Layout.types(&counts));
 ```
@@ -738,8 +740,8 @@ pub fn setPayload(self: *Patch, id: SectionId, edit: Edit) PatchError!void
 and would make the signature suggest aliasing that does not exist: the patch holds its own copy, so
 a caller that mutates its `Edit` afterwards cannot affect the patch either way.
 
-The call sites carry the argument. There are 25, 21 of them in tests, nearly all handing over a
-temporary: `p.setPayload(.type, raw("t"))`. Under `*const` every one becomes `&raw("t")` or
+The call sites carry the argument. Most are in tests, nearly all handing over a temporary:
+`p.setPayload(.type, raw("t"))`. Under `*const` every one becomes `&raw("t")` or
 `&.{ .add_exports = ... }`. That would compile — `&temporary` is legal in this Zig version — so this
 is a readability decision, not a feasibility one.
 
@@ -753,7 +755,7 @@ reason: the list stores a copy, and that copy is the call's job.
 the iterator advances its own copy and the caller's cursor must not move. `BodyIter` (32) is one
 iteration's state; a rewriter gets a fresh one per pass, so passing it by value is the contract.
 `Body.Input` (40) is built at the call site from the entry being replaced, read once, and dropped.
-`Module.Section` (24) is a borrowed frame and is passed by value where a custom edit is matched or
+`Module.Section` (16) is a borrowed frame and is passed by value where a custom edit is matched or
 written.
 
 **Descriptors are read and forgotten.** `Diagnostics.Where` describes one failure; every call site

@@ -1,11 +1,7 @@
-//! Replaces table types in the table section; the section's count never changes.
+//! Replaces table types; the table count never changes.
 //!
-//!     table     ::= vec(tabletype)
-//!     tabletype ::= reftype limits
-//!
-//! A replacement names an input table by index. Imported tables have no entry here, so they are
-//! refused; added tables are not supported yet (there is no `addTable`). Entries the plan does not
-//! replace are copied verbatim, padded LEBs included; a replacement is re-encoded canonically.
+//! Imported tables and added tables are refused. Unnamed entries are copied verbatim; replacements
+//! are re-encoded canonically.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -18,14 +14,13 @@ const Options = @import("../Options.zig");
 const Plan = @import("../Plan.zig");
 const tables = @import("../payload/tables.zig");
 
-/// One input table whose type is replaced. `table` is an input table index; it must name a
-/// defined table (at or after the input's imported table count).
+/// One input table whose type is replaced. `table` must name a defined table.
 pub const Replacement = struct {
     table: u32,
     table_type: tables.Type,
 };
 
-/// Caller-owned. `SetTables.encode` copies entries it does not name from the module.
+/// Caller-owned; entries not named here are copied from the module.
 entries: []const Replacement = &.{},
 
 const SetTables = @This();
@@ -78,9 +73,8 @@ fn readOldCount(module: *const Module, options: Options) EncodeError!u32 {
     return iterator.count;
 }
 
-/// Checks every replacement before the first byte is written. `limit` is how many input table
-/// indices the input's table section can cover: with a consistent input it equals the table
-/// space's size, and with an inconsistent one it is the number that is really there.
+/// Checks every replacement before the first byte is written. `limit` is what the input's table
+/// section can cover: the table space's size when consistent, the real entry count otherwise.
 fn check(self: *const SetTables, imported: u32, old_count: u32, options: Options) EncodeError!void {
     const limit = std.math.add(u32, imported, old_count) catch return error.Overflow;
     for (self.entries, 0..) |*entry, i| {
@@ -113,8 +107,8 @@ fn replacementFor(self: *const SetTables, table: u32) ?*const Replacement {
     return null;
 }
 
-/// `tables.write` can fail for the caller's data: reserved limit flags, or a 32-bit value that
-/// does not fit. Those are diagnosed here; `WriteFailed` is not, because it may leave bytes.
+/// `tables.write` can fail for caller data: reserved flags or values that do not fit. Those are
+/// diagnosed here; `WriteFailed` is not, because it may leave bytes.
 fn writeTableType(writer: *Io.Writer, table_type: tables.Type, options: Options) EncodeError!void {
     tables.write(table_type, writer) catch |err| switch (err) {
         error.UnsupportedFeature, error.Overflow => return Diagnostics.fail(

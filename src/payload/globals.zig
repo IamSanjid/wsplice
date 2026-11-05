@@ -1,13 +1,8 @@
-//! Reader for the global section payload. Borrows the bytes it reads; allocates nothing.
+//! Global section codec: reads entries, each a global type plus a constant expression, and writes
+//! one global type.
 //!
-//! One global is a global type and a constant expression:
-//!
-//!     global     ::= gt:globaltype e:expr
-//!     globaltype ::= t:valtype m:mut
-//!
-//! The expression is measured, not decoded (`const_expr.take`), because an existing initializer is
-//! copied as bytes. Nothing here checks that the expression produces the declared type: that is
-//! validation, and `wasm-validate` does it.
+//! Initializers are measured, not decoded, because unchanged ones are copied as bytes. Initializer
+//! typing is `wasm-validate`'s job.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -29,11 +24,10 @@ pub const Type = struct {
 };
 
 pub const Entry = struct {
-    /// The declared type: a value type and a mutability.
     global_type: Type,
 
-    /// The initializer's instructions, without the terminating `end`: `const_expr.Expr.raw` takes
-    /// them unchanged, which is how an existing global is copied.
+    /// The initializer's instructions without the terminating `end`; `const_expr.Expr.raw` copies
+    /// them unchanged.
     instructions: []const u8,
 };
 
@@ -95,7 +89,7 @@ pub fn writeType(global_type: Type, writer: *Io.Writer) EncodeError!void {
 }
 
 /// `mut` is one byte with exactly two legal values; anything else would change what follows, so it
-/// is refused rather than guessed at.
+/// is refused.
 fn readMutability(cursor: *Cursor) PayloadError!spec.Mutability {
     const byte = cursor.readByte() catch |err| return fromCursor(err);
     return std.enums.fromInt(spec.Mutability, byte) orelse error.InvalidValue;

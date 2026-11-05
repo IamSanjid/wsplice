@@ -1,12 +1,6 @@
-//! Naming an entity in an index space, and turning that name into the number an encoding needs.
-//!
-//! An index is **input** — the input module already has it, and the number is the one the reader
-//! gave back — **appended**: the n-th entity of that space this plan appends, or
-//! **added import**: the n-th import of that space the plan adds. Input imports keep their places
-//! and added imports go after them, before the module's own entities. Resolving one needs three
-//! numbers per space: how many entities the input has, how many of them are imported, and how many
-//! imports the plan adds. Nothing here knows what the plan contains, which is what lets a patch
-//! stay a plan that any input of the right shape can be emitted against.
+//! Symbolic indices: `.input`, `.appended`, and `.added_import`.
+//! Resolving one needs a space's input total, imported count, and added-import count; nothing here
+//! knows what the plan contains.
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -20,8 +14,7 @@ const kind_count = @typeInfo(spec.ExternalKind).@"enum".field_names.len;
 /// The index spaces an index can name: `spec.IndexSpace`, parameterizing `Index` here.
 pub const Space = spec.IndexSpace;
 
-/// How many imports of each kind the plan adds. `emit` puts it in the `Plan` every edit resolves
-/// against: an added import shifts the indices of its own space.
+/// Import counts the plan adds per kind; each added import shifts its own space.
 pub const AddedImports = struct {
     /// One count per kind, indexed by `spec.ExternalKind`.
     counts: [kind_count]u32 = @splat(0),
@@ -35,16 +28,15 @@ pub const AddedImports = struct {
     }
 };
 
-/// One space's input layout, plus the imports the plan adds to it. This is the whole context an
-/// index resolves against.
+/// One space's input layout plus the imports the plan adds; this is what an index resolves against.
 pub const Layout = struct {
     input_imported: u32,
     input_total: u32,
     added_imports: u32,
 
     pub fn of(
-        counts: *const Counts,
         kind: spec.ExternalKind,
+        counts: *const Counts,
         added_imports: *const AddedImports,
     ) Layout {
         return .{
@@ -64,33 +56,28 @@ pub const Layout = struct {
     }
 };
 
-/// An index into one `space`. The parameter is the type's identity: an index into one space cannot
-/// be used where another is expected, which is the mistake that would otherwise produce a valid
-/// module that calls the wrong function.
+/// An index into one `space`. The parameter makes each instantiation a distinct type, so indices
+/// from different spaces cannot be mixed.
 pub fn Index(comptime space_of: Space) type {
     return union(enum) {
-        /// An index in the input module, as it reads today. Input imports are included.
+        /// An index in the input module, imports included.
         input: u32,
 
-        /// The n-th defined entity of this space the plan appends, counting from 0 in call order.
+        /// The n-th defined entity this plan appends, in call order.
         appended: u32,
 
-        /// The n-th import of this space the plan adds. It is placed before the module's own
-        /// entities, right after the input's imports.
+        /// The n-th import this plan adds, placed after the input's imports.
         added_import: u32,
 
-        /// Which space this is. It makes the type depend on its argument — without it Zig gives
-        /// every instantiation the same type, and the spaces would be interchangeable again.
+        /// The space; it makes the type depend on its argument.
         pub const space = space_of;
 
-        /// The final index. Only `.input` is checked against the input: `.appended` and
-        /// `.added_import` ordinals are the plan's to hand out, not the resolver's.
+        /// The final index. Only `.input` is checked; plan ordinals are the plan's to hand out.
         pub fn resolve(self: @This(), layout: Layout) error{IndexOutOfRange}!u32 {
             switch (self) {
                 .input => |index| {
                     if (index >= layout.input_total) return error.IndexOutOfRange;
-                    // An input import keeps its place: added imports follow the input's imports,
-                    // before the module's own entities.
+                    // Input imports keep their place; added imports follow them.
                     if (index < layout.input_imported) return index;
                     return index + layout.added_imports;
                 },
@@ -113,8 +100,7 @@ pub const Memory = Index(.memory);
 pub const Global = Index(.global);
 pub const Tag = Index(.tag);
 
-/// An entity of any kind: what an export points at, and what anything else that names "some
-/// entity" holds. The tag is the kind, so the space of the index is never ambiguous.
+/// An entity of any kind, tagged by its space.
 pub const Target = union(spec.ExternalKind) {
     function: Function,
     table: Table,
@@ -122,7 +108,7 @@ pub const Target = union(spec.ExternalKind) {
     global: Global,
     tag: Tag,
 
-    /// An entity the input module already has.
+    /// An entity the input already has.
     pub fn input(external_kind: spec.ExternalKind, index: u32) Target {
         return switch (external_kind) {
             .function => .{ .function = .{ .input = index } },
@@ -133,7 +119,7 @@ pub const Target = union(spec.ExternalKind) {
         };
     }
 
-    /// The n-th defined entity of `external_kind` this plan appends.
+    /// The n-th defined entity of this kind the plan appends.
     pub fn appended(external_kind: spec.ExternalKind, ordinal: u32) Target {
         return switch (external_kind) {
             .function => .{ .function = .{ .appended = ordinal } },
@@ -144,7 +130,7 @@ pub const Target = union(spec.ExternalKind) {
         };
     }
 
-    /// The n-th import of `external_kind` this plan adds.
+    /// The n-th import of this kind the plan adds.
     pub fn addedImport(external_kind: spec.ExternalKind, ordinal: u32) Target {
         return switch (external_kind) {
             .function => .{ .function = .{ .added_import = ordinal } },
@@ -166,14 +152,13 @@ pub const Target = union(spec.ExternalKind) {
         added_imports: *const AddedImports,
     ) EncodeError!u32 {
         const external_kind = self.kind();
-        const layout = Layout.of(counts, external_kind, added_imports);
+        const layout = Layout.of(external_kind, counts, added_imports);
         return switch (self) {
             inline else => |ref| ref.resolve(layout),
         };
     }
 
-    /// The input index, when the target names one, else null. Only an `.input` index can be out
-    /// of range, which is why a caller that wants to report the offending number asks for it here.
+    /// The input index, or null for a plan ordinal; only `.input` can be out of range.
     pub fn inputIndex(self: Target) ?u32 {
         return switch (self) {
             inline else => |ref| switch (ref) {

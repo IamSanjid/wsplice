@@ -1,13 +1,8 @@
-//! Reader for the code section payload: one self-delimiting entry per defined function.
+//! Reads the code section: one self-delimiting `size:u32 func` entry per defined function, where
+//! `func` is `locals:vec(locals) expr:expr`.
 //!
-//!     code  ::= vec(entry)
-//!     entry ::= size:u32 func
-//!     func  ::= locals:vec(locals) expr:expr
-//!
-//! `size` says how many bytes `func` takes, so an entry can be copied without reading it. This
-//! module reads the frame only: the locals vector, and the expression's bytes. Locals are reported
-//! as encoded, because a body edit can keep them or append to them; `operators.BodyIter` reads the
-//! instructions.
+//! Only the frame is read: the locals vector and the expression's bytes. An unchanged entry can be
+//! copied without decoding its instructions.
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -23,7 +18,6 @@ pub const Entry = struct {
     /// The locals vector as encoded: the run count, then each run's count and type.
     locals: []const u8,
     /// The expression: everything after the locals, the terminating `end` included.
-    /// `operators.BodyIter.init` takes exactly this.
     body: Cursor,
 };
 
@@ -44,8 +38,8 @@ pub const Iterator = struct {
         return .{ .cursor = cursor, .count = count };
     }
 
-    /// The next entry, or null after `count` entries (and only if the payload ends exactly there).
-    /// A failed call leaves the iterator where it was.
+    /// The next entry, or null after `count` entries; trailing bytes are an error. A failed call
+    /// leaves the iterator where it was.
     pub fn next(self: *Iterator) PayloadError!?Entry {
         assert(self.yielded <= self.count);
         const cursor = &self.cursor;

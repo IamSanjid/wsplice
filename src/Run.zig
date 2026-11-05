@@ -1,5 +1,5 @@
-//! A pending stretch of the input that will reach the output unchanged.
-//! `start` is the first input byte that has not yet been written or skipped.
+//! A pending stretch of input to copy unchanged. `start` is the first byte not yet written or
+//! skipped.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;

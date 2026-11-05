@@ -1,12 +1,7 @@
-//! Reader for the type section payload: one function type per entry.
+//! Reads the type section: function types only, each encoded as `0x60 vec(valtype) vec(valtype)`.
 //!
-//!     type     ::= vec(functype)
-//!     functype ::= 0x60 vec(valtype) vec(valtype)
-//!
-//! Only function types are representable here. The GC forms (rec, sub, struct, array) are refused
-//! with `UnsupportedFeature`, like every other GC feature in the library. Parameters and results
-//! are kept as their encoded one-byte value types, so reading a signature allocates nothing;
-//! `Values` decodes them lazily.
+//! Parameters and results stay encoded, so reading a signature does not allocate. GC type forms
+//! are `UnsupportedFeature`; `EncodedValues` carries an explicit count for future multi-byte types.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -23,8 +18,7 @@ const fromCursor = errors.fromCursor;
 /// The one type form this library reads and writes.
 pub const form_func: u8 = 0x60;
 
-/// The other forms the binary format assigns. They are GC types, so they are refused as a feature
-/// rather than reported as an arbitrary invalid byte.
+/// The GC type forms. They are refused as a feature, not reported as arbitrary invalid bytes.
 const gc_forms = [_]u8{ 0x4E, 0x50, 0x5E, 0x5F }; // rec, sub, array, struct
 
 /// One function type. `params` and `results` are the value type bytes, one per parameter or
@@ -42,13 +36,11 @@ pub const Entry = struct {
     }
 };
 
-/// A function type's parameters or results for a plan: either encoded value types borrowed from a
-/// `types.Entry`, or typed values a plan constructs.
+/// A parameter or result list: encoded values from an entry, or typed values a plan builds.
 ///
-/// The wasm grammar allows multi-byte value types (the prefixed `ref null ht`/`ref ht` forms);
-/// this library only represents the one-byte forms and refuses prefixes with `UnsupportedFeature`.
-/// `EncodedValues.value_count` is therefore authoritative rather than `bytes.len`, so the shape
-/// does not silently break if prefixed value types are added later.
+/// The wasm grammar allows multi-byte value types, but this library only represents one-byte forms.
+/// `EncodedValues.value_count`, not `bytes.len`, is authoritative, so the shape survives multi-byte
+/// value types.
 pub const SignatureValues = union(enum) {
     /// Encoded value types, one per value, without the vector count.
     encoded: EncodedValues,
@@ -73,24 +65,23 @@ pub const SignatureValues = union(enum) {
     }
 };
 
-/// Encoded value types plus their count. `fromOneByteEntryValues` is the checked path for the
-/// current one-byte subset; direct construction trusts the caller, like raw instruction bytes.
+/// Encoded value types plus their count. `fromOneByteEntryValues` is the checked path; direct
+/// construction trusts the caller, like raw instruction bytes.
 pub const EncodedValues = struct {
     /// Value type bytes only; the vector count is not included.
     bytes: []const u8,
-    /// The number of value types in `bytes`. In the current one-byte-only subset this equals
-    /// `bytes.len`, but it stays authoritative if multi-byte value types are added.
+    /// The number of value types in `bytes`. It equals `bytes.len` in the current one-byte subset
+    /// but stays authoritative if multi-byte value types are added.
     value_count: u32,
 
-    /// Wraps the value bytes of a current `types.Entry`, where every value type is one byte. The
-    /// entry's usize count already fits in `u32`.
+    /// Wraps the value bytes of a current `types.Entry`, where every value type is one byte.
     pub fn fromOneByteEntryValues(bytes: []const u8) EncodedValues {
         return .{ .bytes = bytes, .value_count = @intCast(bytes.len) };
     }
 };
 
 /// A function type a plan can add. `fromEntry` copies an existing one without decoding; `typed`
-/// builds a new one from value types.
+/// builds one from value types.
 pub const Signature = struct {
     params: SignatureValues = .{ .typed = &.{} },
     results: SignatureValues = .{ .typed = &.{} },
@@ -121,8 +112,8 @@ pub const Signature = struct {
     }
 };
 
-/// Decodes a validated value type span. Every byte is exactly one `spec.ValueType`; the reader
-/// checked that before handing the span out, so a malformed byte is a caller error here.
+/// Decodes a validated value type span. The reader checked each byte, so a malformed byte is a
+/// caller error here.
 pub const Values = struct {
     bytes: []const u8,
     pos: u32 = 0,
@@ -161,8 +152,7 @@ pub const Iterator = struct {
         };
     }
 
-    /// The next function type, or null after `count` entries (and only if the payload ends there).
-    /// A failed call leaves the iterator where it was.
+    /// The next function type, or null after `count` entries; trailing bytes are an error.
     pub fn next(self: *Iterator) PayloadError!?Entry {
         assert(self.yielded <= self.count);
         const cursor = &self.cursor;

@@ -1,12 +1,7 @@
-//! Appends function types to the type section; creates the section when absent.
+//! Appends function types, creating the type section when absent.
 //!
-//!     type     ::= vec(functype)
-//!     functype ::= 0x60 vec(valtype) vec(valtype)
-//!
-//! New types are written from shared `types.Signature` values: either typed values a plan
-//! constructs or encoded values borrowed from an existing `types.Entry`. The input's entries are
-//! copied verbatim, padded LEBs included. A type this plan adds is named `.appended = n`, and
-//! `AddFunctions` resolves that after the input's type count.
+//! New signatures may be typed values or encoded values borrowed from an entry; old entries are
+//! copied verbatim, padded LEBs included.
 const std = @import("std");
 const Io = std.Io;
 
@@ -17,10 +12,10 @@ const EncodeError = @import("../errors.zig").EncodeError;
 const Plan = @import("../Plan.zig");
 const types = @import("../payload/types.zig");
 
-/// One function type to add. Its slices are borrowed until `emit` returns.
+/// One function type to add; its slices are borrowed until `emit`.
 pub const Signature = types.Signature;
 
-/// One signature per added type, in added-ordinal order.
+/// One signature per added type, in appended-ordinal order.
 signatures: []const Signature = &.{},
 
 const AddTypes = @This();

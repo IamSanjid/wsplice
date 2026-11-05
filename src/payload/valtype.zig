@@ -1,9 +1,6 @@
-//! Value types: one byte for every number and vector type, and one byte for a reference type in its
-//! shorthand form (`ref null ht`).
-//!
-//! The prefixed reference forms (0x63/0x64 followed by a heap type) are legal wasm but are not
-//! representable by `ValueType`, so they are refused rather than read as if they were one byte: a
-//! reader that guessed their length would desync everything after the type.
+//! Value types: one byte for number/vector types and for the shorthand reference form
+//! (`ref null ht`). Prefixed reference forms are legal wasm but refused here, because guessing
+//! their length would desync every following type.
 const std = @import("std");
 const Io = std.Io;
 const assert = std.debug.assert;
@@ -17,9 +14,8 @@ const fromCursor = errors.fromCursor;
 
 pub const ValueType = spec.ValueType;
 
-/// Reads one value type. Fails closed: a prefixed reference type is `UnsupportedFeature`, and any
-/// byte that names no single-byte value type is `InvalidValue`. A failed read leaves the cursor
-/// where it was.
+/// Reads one value type. Fails closed: a prefixed reference type is `UnsupportedFeature`, any other
+/// unknown byte is `InvalidValue`, and a failed read restores the cursor.
 pub fn read(cursor: *Cursor) PayloadError!ValueType {
     const start = cursor.pos;
     errdefer cursor.pos = start;
@@ -32,9 +28,8 @@ pub fn read(cursor: *Cursor) PayloadError!ValueType {
     return value_type;
 }
 
-/// Reads a reference type: the one-byte shorthand, which is exactly one abstract heap type. A
-/// prefixed form is `UnsupportedFeature`; a byte that names no heap type is `InvalidValue`, because
-/// a number or vector type cannot be a reference type in any version of wasm.
+/// Reads a reference type: the one-byte shorthand, which is one abstract heap type. A prefixed form
+/// is `UnsupportedFeature`; any other byte is `InvalidValue`.
 pub fn readReference(cursor: *Cursor) PayloadError!spec.AbstractHeapType {
     const start = cursor.pos;
     errdefer cursor.pos = start;
@@ -47,8 +42,7 @@ pub fn readReference(cursor: *Cursor) PayloadError!spec.AbstractHeapType {
     return heap_type;
 }
 
-/// Reads the one byte both kinds of type start with, and refuses the two prefixes that would make
-/// it the first of several. What the byte means is the caller's question.
+/// Reads the one byte both kinds of type start with, refusing the prefixes that make it multi-byte.
 fn readTypeByte(cursor: *Cursor) PayloadError!u8 {
     const byte = cursor.readByte() catch |err| return fromCursor(err);
     if (byte == spec.ref_prefix_nullable or byte == spec.ref_prefix_non_nullable)
@@ -56,8 +50,7 @@ fn readTypeByte(cursor: *Cursor) PayloadError!u8 {
     return byte;
 }
 
-/// Writes the one byte the type is. There is no second byte to forget: a prefixed form cannot be
-/// constructed, so it cannot be produced by mistake.
+/// Writes the one byte the type is; a prefixed form cannot be constructed.
 pub fn write(value: ValueType, writer: *Io.Writer) EncodeError!void {
     try writer.writeByte(value.toByte());
 }

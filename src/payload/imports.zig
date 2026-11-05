@@ -13,10 +13,8 @@ const errors = @import("../errors.zig");
 const PayloadError = errors.PayloadError;
 const fromCursor = errors.fromCursor;
 
-/// A table's type is `payload/tables.zig`'s `Type`: a reference type and limits. A global's is
-/// `payload/globals.zig`'s `Type`: a value type and mutability. Both are typed, not raw:
-/// `payload/valtype.zig` is the only place that reads that encoding, so a type accepted here is a
-/// type the rest of the library knows.
+/// Table and global descriptors reuse the typed payload shapes. `valtype.zig` is the only reader of
+/// their encoding, so a type accepted here is one the rest of the library knows.
 pub const Table = tables.Type;
 pub const Global = globals.Type;
 
@@ -56,8 +54,7 @@ pub const Iterator = struct {
         };
     }
 
-    /// The next entry, or null after `count` entries (and only if the payload ends exactly there).
-    /// A failed call leaves the iterator where it was.
+    /// The next entry, or null after `count` entries; trailing bytes are an error.
     pub fn next(self: *Iterator) PayloadError!?Entry {
         assert(self.yielded <= self.count);
         const cursor = &self.cursor;

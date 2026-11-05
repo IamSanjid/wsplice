@@ -1,15 +1,12 @@
-//! The `dylink.0` custom-section payload. It is deliberately name-agnostic: callers may use it on
-//! a section named "dylink.0" or on any custom name whose data follows the same format.
+//! The `dylink.0` payload. It is name-agnostic: the same format under any custom name works. All
+//! counts and sizes are LEB u32.
 //!
-//! Format (all sizes/counts are LEB u32):
-//!   data        ::= subsection*
-//!   subsection  ::= kind:u8 size:u32 payload:bytes
-//!   kind 1      ::= memory_size memory_alignment_log2 table_size table_alignment_log2
-//!   kind 2      ::= vec(name)
+//! Each subsection is `kind:u8 size:u32 payload`. Kind 1 (mem_info) is four LEB u32s:
+//! `memory_size`, `memory_alignment_log2`, `table_size`, `table_alignment_log2`; kind 2 (needed)
+//! is `vec(name)`.
 //!
-//! `Update.write` rewrites mem_info and needed and copies every other subsection byte-for-byte.
-//! `Info.write` creates mem_info and an optional needed vector. Neither allocates: both stream to
-//! the writer passed by `emit`.
+//! `Update` rewrites mem_info and needed and copies every other subsection byte-for-byte; `Info`
+//! creates mem_info and an optional needed vector. Neither allocates.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -23,8 +20,8 @@ const fromCursor = errors.fromCursor;
 /// The conventional custom-section name. `read`/`write` do not require it.
 pub const name = "dylink.0";
 
-/// Dylink subsection kinds. The trailing `_` keeps unknown kinds representable so future kinds can
-/// be added without making every switch exhaustive over the old set.
+/// Dylink subsection kinds. Kinds 3 (export_info), 4 (import_info), and unknown kinds are opaque;
+/// the trailing `_` keeps them representable.
 const SubsectionKind = enum(u8) {
     mem_info = 1,
     needed = 2,
@@ -44,13 +41,13 @@ pub const Needed = struct {
     /// Complete `vec(name)` encoding: count plus every name vector.
     encoded: []const u8,
 
-    /// Number of names in the vector. `encoded` must come from `read`/validation.
+    /// Number of names in the vector.
     pub fn count(self: Needed) PayloadError!u32 {
         var cursor = try cursorFor(self.encoded);
         return cursor.readUleb(u32) catch |err| return fromCursor(err);
     }
 
-    /// Iterates the names in order. `encoded` must come from `read`/validation.
+    /// Iterates the names in order.
     pub fn iterator(self: Needed) PayloadError!NeededIter {
         var cursor = try cursorFor(self.encoded);
         const name_count = cursor.readUleb(u32) catch |err| return fromCursor(err);
@@ -62,7 +59,7 @@ pub const NeededIter = struct {
     cursor: Cursor,
     remaining: u32,
 
-    /// Borrowed name bytes; null after the last entry. Trailing bytes are an error.
+    /// Borrowed name bytes, or null after the last entry; trailing bytes are an error.
     pub fn next(self: *NeededIter) PayloadError!?[]const u8 {
         if (self.remaining == 0) {
             if (!self.cursor.atEnd()) return error.TrailingBytes;
@@ -81,7 +78,7 @@ pub const NeededSource = union(enum) {
     none,
     /// Re-encode this caller-owned list.
     names: []const []const u8,
-    /// Complete `vec(name)` encoding, count included. Validated before writing.
+    /// Complete `vec(name)` encoding; validated before writing.
     encoded: []const u8,
 };
 
@@ -92,9 +89,8 @@ pub const View = struct {
     data: []const u8,
 };
 
-/// Reads the known dylink.0 metadata without allocating. Unknown subsections are skipped.
-/// Duplicate mem_info or needed subsections are `InvalidValue`; a malformed needed vector is a
-/// payload error.
+/// Reads the known metadata without allocating; unknown subsections are skipped. Duplicate
+/// mem_info/needed is `InvalidValue`, and a malformed needed vector is a payload error.
 pub fn read(data: []const u8) PayloadError!View {
     var mem_info: ?MemInfo = null;
     var needed: ?Needed = null;
@@ -127,12 +123,11 @@ pub const Update = struct {
     memory_alignment_log2: ?u32 = null,
     table_size: ?u32 = null,
     table_alignment_log2: ?u32 = null,
-    /// null: keep the existing needed subsection. `.none`: remove it. `.names`/`.encoded`:
-    /// replace it, appending when the input has no needed subsection.
+    /// null keeps the existing subsection; `.none` removes it; `.names`/`.encoded` replace it, or
+    /// append when absent.
     needed: ?NeededSource = null,
 
-    /// Streams the updated data after the custom-section name. `original` is required: an update
-    /// without an input section is `InvalidValue` (use `Info` to create one).
+    /// Streams updated data. `original` is required; use `Info` to create a payload.
     pub fn write(self: *const Update, original: ?[]const u8, writer: *Io.Writer) EncodeError!void {
         const data = original orelse return error.InvalidValue;
         var cursor = try cursorFor(data);
@@ -195,8 +190,8 @@ pub const Info = struct {
     /// `.none` omits the needed subsection. `.names`/`.encoded` create it.
     needed: NeededSource = .none,
 
-    /// Streams new data after the custom-section name. `original` is unused; this is the append
-    /// source. Names and encoded bytes are borrowed and must outlive `emit`.
+    /// Streams new data; `original` is unused, so this is the append source. Borrowed names and
+    /// bytes must outlive `emit`.
     pub fn write(self: *const Info, original: ?[]const u8, writer: *Io.Writer) EncodeError!void {
         _ = original;
         try writeMemInfoSubsection(self.mem_info, writer);
@@ -256,7 +251,7 @@ fn writeMemInfo(info: MemInfo, writer: *Io.Writer) EncodeError!void {
 }
 
 fn writeMemInfoSubsection(info: MemInfo, writer: *Io.Writer) EncodeError!void {
-    var buf: [20]u8 = undefined; // four u32 LEBs are at most 20 bytes
+    var buf: [20]u8 = undefined; // four u32 LEBs, at most 20 bytes
     var counter: Io.Writer = .fixed(&buf);
     try writeMemInfo(info, &counter);
     try writeSubsection(writer, .mem_info, counter.buffered());

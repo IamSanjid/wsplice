@@ -13,16 +13,17 @@ one thing, read `docs/ARCHITECTURE.md`, then run the tests below and check `git 
 - Docs: `docs/ARCHITECTURE.md` (design, including not-yet-implemented parts),
   `docs/TIGER_STYLE.md` (verbatim rules), this file.
 - There is no host application or crate here; wsplice was extracted from a larger project.
-- Feature state: through stage 13a (`SetTables`) and 11 (local bounds). Next is 13b (element
-  segments) when needed. The old stage numbers are kept only for continuity.
+- Feature state: stages through 13a (`SetTables`) and 11 (local bounds), plus custom-section
+  query/edit/remove and dylink.0 needed handling. Next is 13b (element segments) when needed. The old
+  stage numbers are kept only for continuity.
 
 ## How to continue
 
 1. Read `docs/ARCHITECTURE.md`, then this file.
 2. `git status --short` from the repository root.
 3. Run both test commands below; **524/524** is the expected baseline.
-4. Next is 13b (element segments / `addElementSegment`), deferred until the caller is ready; 11 is
-   done.
+4. Next is 13b (element segments / `addElementSegment`), deferred until the caller is ready; 11,
+   custom sections, and dylink.0 needed handling are done.
 
 ## Build, test, check
 
@@ -51,7 +52,6 @@ zig fmt --check src
   whole section payload. `Body` is payload; `SetBodies` is the edit.
 - A new production file must be added to `src/tests/style.zig` and to a test file imported from
   `src/tests/all.zig`.
-- Comments: short, Zig-std style. Do not rewrite old comments for style.
 - `src/wsplice.zig` groups its exports: types first, then namespaces/module imports, then functions,
   without section comments or blank separators. Its test block only imports `tests/all.zig`; that
   registry is where every test module is named.
@@ -84,7 +84,7 @@ const plan = Plan.fromPatch(&patch);
 
 const target_final = try target.resolve(&counts, &plan.added_imports);
 const function_final = try added_function.resolve(
-    index.Layout.of(&counts, .function, &plan.added_imports),
+    index.Layout.of(.function, &counts, &plan.added_imports),
 );
 const type_final = try added_type.resolve(index.Layout.types(&counts));
 ```
@@ -104,9 +104,9 @@ const type_final = try added_type.resolve(index.Layout.types(&counts));
   (slice only), `AddFunctions`, `AddImports`, `AddTypes`, `AddGlobals`, `SetBodies`, `SetTables`;
   `Builder`, `Query`, `Counts`, `Plan`, `index`.
 - `Diagnostics` keeps the first failure: error, section, offset, owning function, name, and a
-  `Detail` (an out-of-range index's space, value and limit; a missing body's ordinal). The owning
-  function is the final function index in the emitted module. `Module.parseWith` diagnoses parse
-  failures; `parse` is the same call with no sink.
+  `Detail` (an out-of-range index's space, value and limit; a missing body's ordinal; a custom
+  selector's occurrence). The owning function is the final function index in the emitted module.
+  `Module.parseWith` diagnoses parse failures; `parse` is the same call with no sink.
 - `Plan` (`src/Plan.zig`): the plan-wide context every edit resolves against: `added_imports`,
   `added_types`, `added_functions`. `Plan.fromPatch(patch)` builds it from the patch; a raw edit
   for one of those sections contributes nothing.
@@ -214,6 +214,14 @@ disassembly context can wrap them later.
 Deferred: element segments, `addTable`, table instructions; GC type/value types; imported-table
 `setTable` (import limits are not editable); `custom/name.zig`; the `AddGlobals` options struct;
 test abbreviation cleanup.
+
+## Comment style
+
+Production `src/**/*.zig` comments are ASCII-only and follow Zig stdlib style: concise, and only
+where they explain why, an algorithm, binary formatting, a lifetime, ownership or an invariant.
+Do not restate code, narrate history, or duplicate `ARCHITECTURE.md`; use prose and inline code for
+wire shapes, because BNF belongs in `ARCHITECTURE.md`. Test comments are test methodology, not
+library documentation. Docs may use UTF-8; `TIGER_STYLE.md` is a verbatim copy.
 
 ## Traps remembered
 

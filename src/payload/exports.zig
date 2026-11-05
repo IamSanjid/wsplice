@@ -1,3 +1,4 @@
+//! Reads the export section: each entry is a name, external kind, and index.
 const std = @import("std");
 const assert = std.debug.assert;
 

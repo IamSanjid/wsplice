@@ -1,22 +1,9 @@
-//! Reading instructions out of a function body: where each one starts, where it ends, and how
-//! deeply it nests.
+//! Reads instruction boundaries out of a function body; it does not decode immediates or validate.
 //!
-//! This is a reader, not a validator. Immediates are skipped by their binary width and never
-//! decoded, and what `wasm-validate` checks (an `else` without an `if`, a branch past the
-//! outermost label, a wrong operand type) is not checked here. What is guaranteed is that every
-//! boundary found is the boundary a decoder would find, and that a body is consumed exactly.
-//!
-//! Depth: `Op.depth` counts the constructs that enclose an instruction, so the first instruction of
-//! a body is at 0, the instructions inside a `block` are at 1, and that `block`'s own `end` is
-//! also at 1. The body's final `end` is at 0: it is consumed to end the iteration, never yielded,
-//! and bytes after it are `TrailingBytes`.
-//!
-//! Supported: the base instruction set `std.wasm.Opcode` names, the core instructions it does not
-//! name (`spec.ExtraOpcode`), and the prefixed families `std.wasm` names: `0xFC` (saturating
-//! truncation and bulk memory), `0xFD` (SIMD, relaxed SIMD included) and `0xFE` (atomics).
-//! Refused with `UnsupportedFeature`: `0xFB` (GC), which `std.wasm` does not name, and the legacy
-//! exception-handling instructions (`try`, `catch`, `rethrow`, `delegate`, `catch_all`), which the
-//! 3.0 instruction set replaced with `try_table`. Each is a table to fill in, not a redesign.
+//! `Op.depth` counts enclosing constructs: a body starts at 0, a `block` body at 1, that `block`'s
+//! `end` also at 1, and the body's final `end` at 0. The terminator is consumed but not yielded;
+//! bytes after it are `TrailingBytes`. Base, `0xFC`, `0xFD`, and `0xFE` opcodes are read; GC
+//! (`0xFB`) and the legacy exception instructions are `UnsupportedFeature`.
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -31,9 +18,8 @@ const prefix_gc: u8 = 0xFB;
 const prefix_simd: u8 = 0xFD;
 const prefix_atomics: u8 = 0xFE;
 
-/// `std.enums.fromInt` accepts any value for a non-exhaustive enum (both opcode enumerations have
-/// an unnamed `_` slot), so a byte is turned into an opcode through these tables instead: a byte is
-/// an instruction only if an enumeration names it.
+/// `std.enums.fromInt` accepts any value for a non-exhaustive enum, so a byte becomes an opcode
+/// through these tables: it is an instruction only if an enumeration names it.
 const opcode_from_byte: [256]?spec.BaseOpcode = blk: {
     var table: [256]?spec.BaseOpcode = @splat(null);
     const info = @typeInfo(spec.BaseOpcode);
@@ -53,7 +39,7 @@ const extra_from_byte: [256]?spec.ExtraOpcode = blk: {
 };
 
 /// Prefixed instruction families, indexed by sub-opcode. SIMD is the widest: its relaxed operations
-/// go up to 0x114, so the table covers every value a named sub-opcode can have.
+/// go up to 0x114, so the table covers every named sub-opcode.
 const simd_from_sub: [0x115]?std.wasm.SimdOpcode = blk: {
     var table: [0x115]?std.wasm.SimdOpcode = @splat(null);
     const info = @typeInfo(std.wasm.SimdOpcode);
@@ -75,10 +61,8 @@ const atomics_from_sub: [0x4F]?std.wasm.AtomicsOpcode = blk: {
     break :blk table;
 };
 
-/// What one instruction is, as far as reading it can tell: its opcode, and which of the five
-/// encodings names it. `std.wasm.Opcode` does not name the instructions the reference-types,
-/// tail-call and exception proposals added, so the core byte space is split between two
-/// enumerations; the tag says which one, so an instruction's identity is never a bare number.
+/// What one instruction is: its opcode and which encoding names it. The tag keeps an instruction's
+/// identity from being a bare number.
 pub const Opcode = union(enum) {
     /// An opcode `std.wasm.Opcode` names.
     base: spec.BaseOpcode,
@@ -92,9 +76,8 @@ pub const Opcode = union(enum) {
     atomics: std.wasm.AtomicsOpcode,
 };
 
-/// One instruction and where it sits: `at` is its first byte, `end` one past its last immediate,
-/// both absolute offsets into the module. `opcode` says what it is; the operands stay in the bytes
-/// between `at` and `end`, for the caller to read if it needs them.
+/// One instruction and where it sits: absolute `at`/`end` offsets and its nesting `depth`. The
+/// operands stay in the bytes between `at` and `end`.
 pub const Op = struct {
     at: u32,
     end: u32,
@@ -102,9 +85,8 @@ pub const Op = struct {
     opcode: Opcode,
 };
 
-/// Walks a body's instructions. `body` starts at the first instruction, after the locals vector,
-/// and ends with the final `end`, which is consumed but not yielded. A failed call leaves the
-/// iterator where it was.
+/// Walks a body's instructions. `body` starts at the first instruction and ends with the final
+/// `end`, which is consumed but not yielded. A failed call leaves the iterator where it was.
 pub const BodyIter = struct {
     cursor: Cursor,
     depth: u32 = 0,
@@ -177,8 +159,7 @@ pub fn takeOpcode(cursor: *Cursor) PayloadError!Opcode {
     return error.InvalidValue;
 }
 
-/// Turns a `0xFC` sub-opcode into an instruction. `std.wasm.MiscOpcode` is non-exhaustive, so
-/// `std.enums.fromInt` would accept a number nobody named; only the named values are instructions.
+/// Turns a `0xFC` sub-opcode into an instruction. Only named values are instructions.
 fn miscOpcode(sub: u32) ?std.wasm.MiscOpcode {
     const info = @typeInfo(std.wasm.MiscOpcode);
     inline for (info.@"enum".field_names, info.@"enum".field_values) |name, value| {
@@ -195,8 +176,8 @@ fn atomicsOpcode(sub: u32) ?std.wasm.AtomicsOpcode {
     return if (sub < atomics_from_sub.len) atomics_from_sub[sub] else null;
 }
 
-/// The legacy exception-handling instructions are named (`spec.ExtraOpcode`) but not read: the 3.0
-/// instruction set kept `throw` and `throw_ref` and replaced the rest with `try_table`.
+/// The legacy exception-handling instructions are named but not read: the 3.0 instruction set kept
+/// `throw`/`throw_ref` and replaced the rest with `try_table`.
 fn isRefused(opcode: Opcode) bool {
     return switch (opcode) {
         .extra => |extra| switch (extra) {
@@ -225,8 +206,8 @@ fn isRefused(opcode: Opcode) bool {
     };
 }
 
-/// Opens one construct, for the instructions inside it. One opcode byte per construct bounds the
-/// depth by the module length, which `Module.parse` keeps under 4 GiB, so this cannot overflow.
+/// Opens one construct. One byte per construct bounds the depth by the module length, which stays
+/// under 4 GiB, so this cannot overflow.
 fn open(depth: u32) u32 {
     assert(depth < std.math.maxInt(u32));
     return depth + 1;
@@ -281,7 +262,7 @@ fn immediateOf(opcode: Opcode) Immediate {
 }
 
 /// The immediates of the whole core byte space, keyed by opcode byte. `null` means no instruction
-/// uses that byte: unassigned, or a prefix, which `takeOpcode` handles before this table.
+/// uses that byte: unassigned, or a prefix handled before this table.
 fn immediateOfCoreByte(byte: u8) ?Immediate {
     return switch (byte) {
         0x00, 0x01 => .none, // unreachable, nop
@@ -336,9 +317,8 @@ fn immediateOfMisc(opcode: std.wasm.MiscOpcode) Immediate {
     };
 }
 
-/// SIMD immediates: memory arguments for loads and stores, sixteen bytes for a constant or a
-/// shuffle, one lane byte for extract and replace, and a memory argument plus a lane for the lane
-/// loads and stores. Everything else, relaxed operations included, takes nothing.
+/// SIMD immediates: memory arguments, sixteen bytes for a constant or shuffle, one lane byte, or a
+/// memory argument plus a lane. Everything else, relaxed operations included, takes nothing.
 fn immediateOfSimd(byte: u32) ?Immediate {
     return switch (byte) {
         0x00...0x0B, 0x5C, 0x5D => .memory_argument, // loads, store, the zero-extending loads
@@ -404,8 +384,8 @@ fn skipImmediate(cursor: *Cursor, immediate: Immediate) PayloadError!void {
     }
 }
 
-/// A block type is `0x40`, one value type, or a type index. All but a prefixed reference type and a
-/// type index of 64 or more fit in the one byte that started it.
+/// A block type is `0x40`, one value type, or a type index. Only a prefixed reference type and a
+/// type index of 64 or more extend past the first byte.
 fn skipBlockType(cursor: *Cursor) PayloadError!void {
     const byte = try readByte(cursor);
     if (byte & 0x80 != 0) {
@@ -430,9 +410,8 @@ fn skipValueType(cursor: *Cursor) PayloadError!void {
     }
 }
 
-/// `align offset`, with the multi-memory extension: bit 6 of the alignment says a memory index
-/// comes between the alignment and the offset. A valid alignment exponent never reaches 64, so the
-/// bit cannot mean anything else.
+/// `align offset`. With multi-memory, bit 6 of the alignment says a memory index comes between
+/// them; a valid alignment exponent never reaches 64.
 fn skipMemoryArgument(cursor: *Cursor) PayloadError!void {
     const alignment = try readU32(cursor);
     if (alignment & 0x40 != 0) try skipU32(cursor);
@@ -442,7 +421,7 @@ fn skipMemoryArgument(cursor: *Cursor) PayloadError!void {
 /// `count`, then `count + 1` labels: the table's targets and its default.
 fn skipBrTable(cursor: *Cursor) PayloadError!void {
     const count = try readU32(cursor);
-    // Every label is at least one byte, so a larger count is a truncation, and the bound also keeps
+    // Every label takes at least one byte, so a larger count is truncation; the bound also keeps
     // the loop from running away on a bogus count.
     if (count >= cursor.remaining()) return error.Truncated;
     var i: u32 = 0;
@@ -457,8 +436,7 @@ fn skipSelectTypes(cursor: *Cursor) PayloadError!void {
     while (i < count) : (i += 1) try skipValueType(cursor);
 }
 
-/// `blocktype`, then the catch clauses: `0x00`/`0x01` name a tag and a label, `0x02`/`0x03` only a
-/// label.
+/// `blocktype`, then catch clauses: `0x00`/`0x01` name a tag and a label, `0x02`/`0x03` a label.
 fn skipTryTable(cursor: *Cursor) PayloadError!void {
     try skipBlockType(cursor);
     const count = try readU32(cursor);
@@ -499,8 +477,8 @@ fn readByte(cursor: *Cursor) PayloadError!u8 {
 }
 
 comptime {
-    // A Zig upgrade that names an opcode nobody classified would otherwise be skipped as "no
-    // immediate", which desynchronises every later instruction boundary. Fail here instead.
+    // A new named opcode without an immediate classification would desynchronise every later
+    // boundary, so fail compilation here instead.
     @setEvalBranchQuota(10_000); // ~530 named opcodes, and the range switches they hit
     const std_type = @typeInfo(spec.BaseOpcode);
     for (std_type.@"enum".field_names, std_type.@"enum".field_values) |field_name, field_value| {

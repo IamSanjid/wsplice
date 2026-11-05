@@ -1,14 +1,9 @@
-//! Constant expressions: a short instruction sequence terminated by `end` that computes one value.
-//! Today that is a global's initializer; later it is also an element segment's offset and a data
-//! segment's offset, which is why this lives here and not inside `globals.zig`.
+//! Constant expressions: instructions terminated by `end`, with the terminator excluded from the
+//! stored form.
 //!
-//! The reader here never decodes an expression into a value. An existing initializer is copied as
-//! bytes, so all this module has to do is find where it ends. Writing is the other half: the bytes
-//! are produced from a typed value so the caller never has to encode a LEB by hand.
-//!
-//! Both halves share one convention: an expression is *instructions without the terminating
-//! `end`*. `take` stops before it, and `encode` writes exactly one, so `.{ .raw = take(...) }`
-//! reproduces an existing initializer byte for byte instead of appending a second `end`.
+//! Reading measures where an expression ends so unchanged initializers copy as bytes; writing
+//! produces typed values. `Expr` omits `global.get`/`ref.func` because their indices need the
+//! resolver, but `take` still recognizes them in existing modules.
 const std = @import("std");
 const Io = std.Io;
 const assert = std.debug.assert;
@@ -20,8 +15,7 @@ const EncodeError = errors.EncodeError;
 const PayloadError = errors.PayloadError;
 const fromCursor = errors.fromCursor;
 
-/// `ref.null` and `ref.func` are absent from `std.wasm.Opcode`; they live in `spec.ExtraOpcode`.
-/// They are handled before the switch, which is keyed by the enum.
+/// `ref.null` and `ref.func` are absent from `std.wasm.Opcode`; handle them before the switch.
 const opcode_ref_null: u8 = @backingInt(spec.ExtraOpcode.ref_null);
 const opcode_ref_func: u8 = @backingInt(spec.ExtraOpcode.ref_func);
 
@@ -37,38 +31,26 @@ const f32_bytes = 4;
 const f64_bytes = 8;
 const v128_bytes = 16;
 
-/// A constant expression to write.
+/// A constant expression to write. `f32`/`f64` are bit patterns so NaN payloads survive.
 ///
-/// `f32` and `f64` are bit patterns rather than floats: a NaN payload has to survive a round trip,
-/// and Zig's floats make no such promise.
-///
-/// Deliberately absent are `global.get` and `ref.func`. Their immediates are indices, an index may
-/// need resolving against the patch ("the global this patch adds"), and that machinery arrives with
-/// the resolver. `take` still recognises both, because existing modules contain them.
+/// `global.get` and `ref.func` are deliberately absent: their immediates are indices that may need
+/// resolving against the patch. `take` still recognizes them in existing modules.
 pub const Expr = union(enum) {
     i32: i32,
     i64: i64,
     f32: u32,
     f64: u64,
 
-    /// `ref.null ht` for one of the abstract heap types, one byte each: this covers `funcref`,
-    /// `externref`, `anyref` and the rest. A concrete type index would need the prefixed form, and
-    /// is not expressible here.
+    /// `ref.null ht` for an abstract heap type, one byte: `funcref`, `externref`, and the rest. A
+    /// concrete type index needs the prefixed form and is not expressible here.
     ref_null: spec.AbstractHeapType,
 
-    /// Instructions only, no `end` — the same convention `take` returns. Written verbatim and
-    /// never relocated: an index inside `raw` is the caller's to get right.
-    ///
-    /// It is not scanned for a terminator, and it must not be: `{ 0x41, 0x0B }` is `i32.const 11`,
-    /// and that `0x0B` is an immediate, not the end of anything.
+    /// Instructions only, no `end`, written verbatim and never relocated. This is not scanned for a
+    /// terminator: in `{ 0x41, 0x0B }` the `0x0B` is `i32.const`'s immediate.
     raw: []const u8,
 
-    /// Writes this expression: the instructions, then the single `end` that terminates it.
-    ///
-    /// This has to run at emit time, not at build time: a LEB's length depends on the value, so the
-    /// bytes cannot exist until the expression is final. It returns `EncodeError` rather than
-    /// `Io.Writer.Error` because the resolver will add a second way to fail — an index that does
-    /// not resolve — and widening a return type later would touch every caller.
+    /// Writes the instructions, then exactly one terminating `end`. This runs at emit time because
+    /// the LEB width depends on the final value.
     pub fn encode(self: *const Expr, writer: *Io.Writer) EncodeError!void {
         switch (self.*) {
             .i32 => |value| {
@@ -102,28 +84,12 @@ pub const Expr = union(enum) {
     }
 };
 
-/// Takes one constant expression, leaving `cursor` just past its `end`, and returns its
-/// instructions without that `end`.
+/// Takes one constant expression, leaving `cursor` past its `end`, and returns the instructions
+/// without that `end`. `.{ .raw = take(...) }` therefore reproduces an initializer exactly.
 ///
-/// Instructions only, because that is what `Expr.raw` means: `.{ .raw = take(...) }` must reproduce
-/// an existing initializer exactly, and including the `end` would give it two. A caller that needs
-/// the whole extent has the cursor position on either side of this call.
-///
-/// The returned slice borrows from the cursor's buffer, like every other reader here.
-///
-/// Nothing is decoded: locating the expression is the whole job, and an error means it could not be
-/// measured rather than that it is unusual. Each immediate is skipped by its widest encoding, so an
-/// over-long LEB is refused, but an operand whose value would not fit its declared type is not:
-/// this function measures instructions, it does not judge them.
-///
-/// The scan runs at most `cursor.remaining()` steps, because every instruction consumes at least
-/// one byte. That bound is asserted inside the loop rather than left implicit.
-///
-/// Fails closed on anything whose width it cannot measure. Recognised: `i32.const`, `i64.const`,
-/// `f32.const`, `f64.const`, `v128.const`, `global.get`, `ref.null` (including a concrete type
-/// index), `ref.func`, the extended-const arithmetic opcodes (no immediate), and `end`. Everything
-/// else is `UnsupportedFeature` — in particular the GC prefix `0xFB` and any other SIMD
-/// instruction — rather than a guess that would desync the rest of the section.
+/// Nothing is decoded: each immediate is skipped by its widest encoding. Anything whose width is
+/// unknown is `UnsupportedFeature`; an over-long LEB is `MalformedLeb`. The scan is bounded by the
+/// remaining bytes because every instruction consumes at least one.
 pub fn take(cursor: *Cursor) PayloadError![]const u8 {
     const start = cursor.pos;
     errdefer cursor.pos = start; // a failed call leaves the cursor where it was
@@ -139,9 +105,9 @@ pub fn take(cursor: *Cursor) PayloadError![]const u8 {
         assert(steps <= steps_max); // one byte per step: more steps than bytes is impossible
 
         if (byte == opcode_ref_null or byte == opcode_ref_func) {
-            // `ref.null` carries a heaptype and `ref.func` a function index; either is one LEB of
-            // at most five bytes. The heaptype may be a negative s33 (an abstract type) or a
-            // non-negative one (a concrete type index), and skipping does not care which.
+            // `ref.null` carries a heaptype, `ref.func` a function index: one LEB of at most five
+            // bytes. The heaptype may be a negative s33 (abstract) or a concrete index; both skip
+            // the same way.
             try skipImmediate(cursor, immediate_leb32_max);
             continue;
         }
@@ -171,8 +137,7 @@ pub fn take(cursor: *Cursor) PayloadError![]const u8 {
     }
 }
 
-/// Skips one LEB immediate of at most `max_bytes` bytes. The value is not needed: its width is
-/// what decides where the next instruction starts.
+/// Skips one LEB immediate of at most `max_bytes`; only its width matters.
 fn skipImmediate(cursor: *Cursor, comptime max_bytes: u8) PayloadError!void {
     cursor.skipLeb(max_bytes) catch |err| return fromCursor(err);
 }

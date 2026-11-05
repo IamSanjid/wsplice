@@ -1,9 +1,7 @@
-//! Reader for the function section payload: one type index per defined function.
+//! Reads the function section: one type index per defined function.
 //!
-//!     function ::= vec(typeidx)
-//!
-//! The section only names types. A defined function's body is in the code section at the same
-//! ordinal, and its parameters and results are in the type its index names.
+//! A function's body is in the code section at the same ordinal; its signature is in the type its
+//! index names.
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -35,8 +33,7 @@ pub const Iterator = struct {
         };
     }
 
-    /// The next type index, or null after `count` entries (and only if the payload ends there).
-    /// A failed call leaves the iterator where it was.
+    /// The next type index, or null after `count` entries; trailing bytes are an error.
     pub fn next(self: *Iterator) PayloadError!?u32 {
         assert(self.yielded <= self.count);
         const cursor = &self.cursor;

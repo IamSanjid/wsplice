@@ -1,13 +1,8 @@
-//! Assembles a patch from named additions, so a caller never writes an index by hand.
+//! Builds a patch from symbolic additions, so callers never write an index by hand.
 //!
-//! A builder is unmanaged: `init` needs nothing, and every call that may allocate takes the
-//! allocator, so a plan is not tied to one allocator policy. The entries it gathers are borrowed
-//! by the patch it hands out: the builder must outlive that patch, and must not be changed while
-//! the patch is in use.
-//!
-//! Nothing can be removed, which is what makes an appended entity cheap: the n-th entity of a kind
-//! this plan appends is always `.appended = n`, whatever the input contains. An import is named
-//! `.added_import = n` instead: imports go before the module's own entities.
+//! The builder is unmanaged and borrows the entries the patch references; it must outlive the patch
+//! and not change while the patch is in use. An appended entity is `.appended = n`; an added import
+//! is `.added_import = n` because imports precede the module's own entities.
 const std = @import("std");
 const assert = std.debug.assert;
 
@@ -33,35 +28,35 @@ const tables = @import("payload/tables.zig");
 /// What the adding calls can fail with.
 pub const Error = Allocator.Error || errors.BuilderError;
 
-/// The additions, in call order. Each list becomes one section's edit.
+/// The additions, in call order; each list becomes one section edit.
 globals: std.ArrayList(AddGlobals.Global) = .empty,
 exports: std.ArrayList(AddExports.Entry) = .empty,
-/// The signature of each added type: `types[n]` declares `.appended = n`.
+/// Added signatures; `types[n]` is `.appended = n`.
 types: std.ArrayList(AddTypes.Signature) = .empty,
-/// The imports, in call order. Each one is placed before the module's own entities.
+/// Added imports, in call order; each precedes the module's own entities.
 imports: std.ArrayList(AddImports.Entry) = .empty,
-/// How many imports of each kind were added, by kind. This is also the shift every edit applies.
+/// Added imports per kind; also the shift every edit applies.
 added_imports: index.AddedImports = .{},
-/// The type of each added function: `function_types[n]` declares `.appended = n`.
+/// Added function type indices; `function_types[n]` is `.appended = n`.
 function_types: std.ArrayList(index.Type) = .empty,
-/// The body of each added function, by appended ordinal; `bodies_set` says which slots are filled.
+/// Bodies by appended ordinal; `bodies_set` marks filled slots.
 added_bodies: std.ArrayList(Body) = .empty,
 bodies_set: std.ArrayList(bool) = .empty,
-/// One body per input function the plan replaces.
+/// Bodies replacing input functions.
 existing_bodies: std.ArrayList(SetBodies.Replacement) = .empty,
-/// One replacement per input table the plan sets.
+/// Table-type replacements by input table.
 table_replacements: std.ArrayList(SetTables.Replacement) = .empty,
-/// Custom-section appends and replacements, in call order. These do not use `Patch.slots`.
+/// Custom appends and replacements; these do not use `Patch.slots`.
 custom_edits: std.ArrayList(custom_edit.Edit) = .empty,
 
 const Builder = @This();
 
-/// A plan that adds nothing: no allocation, nothing to free, though `deinit` stays legal.
+/// A plan that adds nothing: no allocation and no deinit required, though `deinit` stays legal.
 pub fn init() Builder {
     return .{};
 }
 
-/// Frees the entry lists. The bytes the entries borrow are the caller's, not the builder's.
+/// Frees the entry lists; the bytes they borrow belong to the caller.
 pub fn deinit(self: *Builder, allocator: Allocator) void {
     self.globals.deinit(allocator);
     self.exports.deinit(allocator);
@@ -75,8 +70,7 @@ pub fn deinit(self: *Builder, allocator: Allocator) void {
     self.custom_edits.deinit(allocator);
 }
 
-/// Adds `signature` and returns the reference that names it: the first type added is
-/// `.appended = 0`. `addFunction` can name the result; the type section is written at `patch` time.
+/// Adds a signature and returns `.appended = n`; the type section is written at `patch` time.
 pub fn addType(
     self: *Builder,
     allocator: Allocator,
@@ -87,10 +81,8 @@ pub fn addType(
     return .{ .appended = @intCast(self.types.items.len - 1) };
 }
 
-/// Adds the import `module.field` and returns the target that names it. The names are borrowed and
-/// must stay alive until `emit` returns. An import is placed before the module's own entities, so
-/// it shifts the indices of its space; `emit` applies that shift to every reference the library
-/// emits.
+/// Adds `module.field` and returns the target naming it. Names are borrowed until `emit`; the
+/// import shifts the indices of its space.
 pub fn addImport(
     self: *Builder,
     allocator: Allocator,
@@ -105,8 +97,7 @@ pub fn addImport(
     return index.Target.addedImport(kind, ordinal);
 }
 
-/// Adds `global`, and returns the index that names it: the first global added is
-/// `.appended = 0`, so an export can name a global before it exists in any module.
+/// Adds `global` and returns `.appended = n`, so an export can name it before any module has it.
 pub fn addGlobal(
     self: *Builder,
     allocator: Allocator,
@@ -117,8 +108,8 @@ pub fn addGlobal(
     return .{ .appended = @intCast(self.globals.items.len - 1) };
 }
 
-/// Adds a function of type `function_type` and returns the reference that names it. Its body is
-/// set by `setBody`, so the body can name this same reference (recursion, self-reference).
+/// Adds a function of type `function_type` and returns its reference. Set the body separately so
+/// the body can name the function (recursion, self-reference).
 pub fn addFunction(
     self: *Builder,
     allocator: Allocator,
@@ -143,11 +134,11 @@ pub fn addExport(
     try self.exports.append(allocator, .{ .name = name, .target = target });
 }
 
-/// Sets `function`'s body. An `.appended` ordinal must come from `addFunction`
-/// (`UnknownFunction`), and a function takes exactly one body (`DuplicateBody`). A function the
-/// plan imports has no body (`ImportedFunction`). The body borrows its bytes, and any rewriter
-/// context it carries, until `emit` returns: a context local to a loop iteration is overwritten
-/// before `emit`, even though `setBody` succeeds. Keep it in an arena or storage outside the loop.
+/// Sets `function`'s body. An `.appended` ordinal must come from `addFunction` (`UnknownFunction`);
+/// a function takes one body (`DuplicateBody`), and an imported function has none
+/// (`ImportedFunction`). The body and any rewriter context must stay alive until `emit`: a context
+/// local to a loop iteration is overwritten before then even though `setBody` succeeds. Keep it in
+/// an arena or outside the loop.
 pub fn setBody(
     self: *Builder,
     allocator: Allocator,
@@ -174,9 +165,8 @@ pub fn setBody(
     }
 }
 
-/// Replaces the type of input table `table`: its reference type and its limits. An imported table
-/// has no table-section entry (`ImportedTable`), and no table can be added yet, so an `.appended`
-/// index is `UnknownTable`. A table takes at most one replacement (`DuplicateTable`).
+/// Replaces an input table's type. Imported tables and `.appended` indices are refused
+/// (`ImportedTable`/`UnknownTable`), and a table takes one replacement (`DuplicateTable`).
 pub fn setTable(
     self: *Builder,
     allocator: Allocator,
@@ -198,10 +188,8 @@ pub fn setTable(
     }
 }
 
-/// Appends a custom section at `placement`. `.start` puts it immediately after the wasm header,
-/// before every section; `.end` puts it after all input bytes, including trailing custom sections.
-/// The name and source are borrowed until `emit`; a streaming source's context must also have a
-/// stable address.
+/// Appends at `.start` (after the wasm header) or `.end` (after all input bytes). The name and
+/// source are borrowed until `emit`; a streaming source's context needs a stable address.
 pub fn addCustomSection(
     self: *Builder,
     allocator: Allocator,
@@ -216,11 +204,9 @@ pub fn addCustomSection(
     } });
 }
 
-/// Replaces the data of the input custom section matching `name` and `occurrence`, preserving its
-/// name and position. The source's rewriter receives the original data. The name and source are
-/// borrowed until `emit`; a streaming source's context must also have a stable address. A missing
-/// selector is `UnknownCustomSection` at emit; a selector already used by a replace or remove is
-/// `DuplicateCustomSection`.
+/// Replaces the selected input section's data, keeping its name and position. The source's rewriter
+/// receives the original data. The name and source are borrowed until `emit`; a missing selector is
+/// `UnknownCustomSection` at emit, and a duplicate selector is `DuplicateCustomSection`.
 pub fn setCustomSection(
     self: *Builder,
     allocator: Allocator,
@@ -236,10 +222,9 @@ pub fn setCustomSection(
     } });
 }
 
-/// Deletes the input custom section matching `name` and `occurrence`, including its section frame.
-/// The name is borrowed until `emit`. Occurrences are input-relative, so removing earlier sections
-/// does not renumber this selector. A missing selector is `UnknownCustomSection` at emit; a
-/// selector already used by a replace or remove is `DuplicateCustomSection`.
+/// Deletes the selected input section, including its frame. Occurrences are input-relative, so
+/// removing earlier sections does not renumber this selector. A missing selector is
+/// `UnknownCustomSection` at emit; a duplicate selector is `DuplicateCustomSection`.
 pub fn removeCustomSection(
     self: *Builder,
     allocator: Allocator,
@@ -269,11 +254,9 @@ pub fn patch(self: *const Builder) Error!Patch {
     return self.patchWith(.{});
 }
 
-/// `patch` with a diagnostics sink. An added function without a body is `MissingBody`, and the
-/// detail names its appended ordinal: emitting the declaration without the body would shift every
-/// later body onto the wrong function. A function or import that names an `.appended` type the plan
-/// never added is `UnknownType`. The patch borrows the entries, so it is valid only until the next
-/// call that changes the builder, or `deinit`.
+/// `patch` with a diagnostics sink. An added function without a body is `MissingBody`, with its
+/// ordinal in the detail; an `.appended` type the plan never added is `UnknownType`. The patch
+/// borrows the builder's entries until the next change or `deinit`.
 pub fn patchWith(self: *const Builder, options: Options) Error!Patch {
     self.assertInvariants();
     for (self.bodies_set.items, 0..) |set, ordinal| {
@@ -332,8 +315,7 @@ pub fn patchWith(self: *const Builder, options: Options) Error!Patch {
     return result;
 }
 
-/// Rejects an `.appended` type ordinal the plan never handed out. An `.input` one is checked
-/// against the input at emit time, where the input's type count is known.
+/// Rejects an `.appended` type ordinal the builder never handed out; `.input` is checked at emit.
 fn checkAddedType(self: *const Builder, type_ref: index.Type, options: Options) Error!void {
     switch (type_ref) {
         .input, .added_import => {},
@@ -360,8 +342,7 @@ fn assertInvariants(self: *const Builder) void {
     assert(std.meta.eql(counted, self.added_imports));
 }
 
-/// `Patch.setPayload` fails only on a second write to one slot, and `patch` writes each slot at
-/// most once into a patch it has just made, so the error is unreachable rather than ignored.
+/// `setPayload` cannot fail here: `patch` writes each slot once into a fresh patch.
 fn setPayload(result: *Patch, id: spec.SectionId, edit: Edit) void {
     result.setPayload(id, edit) catch unreachable;
 }

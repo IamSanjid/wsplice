@@ -1,7 +1,5 @@
-//! The emit-side half of custom-section editing: match input custom sections, measure replacement
-//! and removal sizes, write appends and replacements, and produce custom-section diagnostics.
-//! `emit.zig` keeps only the section walk and calls these functions, so the custom rules live
-//! beside the custom edit types instead of inside the general emitter.
+//! Emit-side custom-section editing: match input sections, measure changes, and write appends,
+//! replacements, and removals. `emit.zig` keeps only the section walk.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -25,6 +23,8 @@ const InputEdit = union(enum) {
     remove,
 };
 
+/// Net byte-size change from all custom edits, after validating selectors; negative when removals
+/// dominate.
 pub fn measureDelta(
     module: *const Module,
     patch: *const Patch,
@@ -85,7 +85,7 @@ pub fn writeEnd(run: *Run, patch: *const Patch, options: Options) EmitError!void
 }
 
 /// Applies the replace or remove edit selecting `section`, if any. A replace writes a new section;
-/// a remove writes nothing and skips the whole old section.
+/// a remove skips the whole old section.
 pub fn writeInputEdit(
     run: *Run,
     module: *const Module,
@@ -204,7 +204,7 @@ fn selectorExists(
 }
 
 /// Rejects duplicate input selectors and selectors naming no input section. A patch with only
-/// appends never parses a custom-section name, so opaque custom payloads stay opaque.
+/// appends never parses custom names.
 fn checkEdits(module: *const Module, patch: *const Patch, options: Options) EmitError!void {
     for (patch.custom, 0..) |*edit, index| {
         const selector = (selectorOf(edit)) orelse continue;

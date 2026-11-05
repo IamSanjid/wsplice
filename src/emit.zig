@@ -19,7 +19,7 @@ const Section = section_mod.Section;
 const Options = @import("Options.zig");
 
 /// `Patch.empty` is legal and copies the input through unchanged. A caller that already knows the
-/// patch is empty should copy the file itself, which skips the measure pass.
+/// patch is empty can copy the file itself and skip the measure pass.
 pub fn emit(
     module: *const Module,
     patch: *const Patch,
@@ -62,7 +62,7 @@ fn emitWalk(
     options: Options,
 ) EmitError!void {
     const plan: Plan = .fromPatch(patch);
-    const measured = try measure(module, patch, &plan, options); // nothing written yet
+    const measured = try measure(module, patch, &plan, options);
     const len: u32 = @intCast(module.bytes.len); // Module.parse guarantees this fits
     var run: Run = .{ .bytes = module.bytes, .writer = writer };
 
@@ -75,7 +75,7 @@ fn emitWalk(
     var tail_pos: u32 = len; // where sections that belong after the last existing one go
     var rank_next: u8 = 1; // the lowest rank that has not been settled yet
     var applied: u8 = 0;
-    // The same bytes already passed through this iterator inside `Module.parse`, so it cannot fail.
+    // The same bytes already passed through this iterator in `Module.parse`, so it cannot fail.
     while (iterator.next() catch unreachable) |section| {
         assert(section.start == end_prev); // sections tile the file
         end_prev = section.whole().end;
@@ -94,7 +94,7 @@ fn emitWalk(
         rank_next = rank + 1;
         tail_pos = section.whole().end;
 
-        const edit = patch.get(section.id) orelse continue; // untouched sections ride along too
+        const edit = patch.get(section.id) orelse continue; // untouched sections ride along
         // measure() filled the payload size of every patched slot.
         const payload_len = measured.payload_len[@backingInt(section.id)].?;
         try spliceSection(&run, module, section, payload_len, edit, &plan, options);
@@ -124,9 +124,9 @@ fn spliceSection(
     plan: *const Plan,
     options: Options,
 ) EmitError!void {
-    try run.flush(section.start); // everything before this section, unchanged
+    try run.flush(section.start);
     try writeSection(run.writer, module, section.id, payload_len, edit, plan, options);
-    run.skip(section.whole().end); // the old bytes of this section are dropped
+    run.skip(section.whole().end); // drop the old section bytes
 }
 
 /// Add one section that the input does not have, at input offset `at`. Nothing is skipped.
@@ -151,8 +151,8 @@ const MissingRange = struct {
     at: u32,
 };
 
-/// Writes every patched section with a rank in `[range.rank_from, range.rank_to)`, in rank order,
-/// at `range.at`. Returns how many were written.
+/// Writes every patched section in `[range.rank_from, range.rank_to)` at `range.at`, in rank order.
+/// Returns how many were written.
 fn insertMissing(
     run: *Run,
     module: *const Module,
@@ -186,8 +186,7 @@ const Measured = struct {
     len_total: u32,
 };
 
-/// Runs every edit once, into a counter. All edit errors surface here, so a failing edit leaves
-/// the writer untouched.
+/// Runs every edit once into a counter, so all edit errors surface before any output is written.
 fn measure(
     module: *const Module,
     patch: *const Patch,

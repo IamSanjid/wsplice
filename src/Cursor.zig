@@ -1,4 +1,4 @@
-//! This is supposed to be a wasm spec respected Cursor not a general purpose Cursor.
+//! A wasm-specific, bounds-checked cursor; not a general-purpose reader.
 const std = @import("std");
 const assert = std.debug.assert;
 

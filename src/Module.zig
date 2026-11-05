@@ -19,11 +19,9 @@ const spec = @import("spec.zig");
 const SectionId = spec.SectionId;
 const section_id_count = spec.section_id_count;
 
-/// Must be a valid WebAssembly module, and must not be changed while the Module is alive.
-/// The Module does not own the bytes, and does not copy them, merely references them.
+/// Borrowed module bytes; must stay valid and unchanged while the Module is alive.
 bytes: []const u8,
-/// Indexed by @backingInt(SectionId). Slot 0 (custom) is never used:
-/// custom sections can repeat and are found by iteration.
+/// Indexed by `SectionId`; slot 0 (custom) is always null because custom sections are not indexed.
 sections: [section_id_count]?Section,
 
 const Module = @This();
@@ -32,9 +30,7 @@ pub fn parse(bytes: []const u8) ParseError!Module {
     return parseWith(bytes, .{});
 }
 
-/// Parses like `parse`, recording the first failure and where it was when `options.diag` is set.
-/// Failures in a section frame point at the frame's start; a failure inside a payload is the
-/// section reader's to report.
+/// Like `parse`, recording the first failure at its location when `options.diag` is set.
 pub fn parseWith(bytes: []const u8, options: Options) ParseError!Module {
     var iter = SectionIter.init(bytes) catch |err|
         return Diagnostics.fail(options.diag, err, .{ .offset = headerFailOffset(err) });
@@ -63,7 +59,7 @@ pub fn parseWith(bytes: []const u8, options: Options) ParseError!Module {
 
         const slot = &module.sections[@backingInt(s.id)];
         if (slot.* != null) {
-            // check this FIRST: a duplicate whose rank also went backwards is still a duplicate
+            // Check duplicates first: a duplicate with a backwards rank is still a duplicate.
             return Diagnostics.fail(options.diag, error.DuplicateSection, .{
                 .section = s.id,
                 .offset = s.start,
@@ -76,13 +72,13 @@ pub fn parseWith(bytes: []const u8, options: Options) ParseError!Module {
                 .offset = s.start,
             });
         }
-        assert(rank > rank_prev); // ranks are unique, so equal is impossible here
+        assert(rank > rank_prev); // ranks are unique
 
         slot.* = s;
         rank_prev = rank;
     }
 
-    assert(end_prev == len); // the iterator reached the end: the file is fully covered
+    assert(end_prev == len); // the file is fully covered
     assert(count <= sections_max);
     module.assertInvariants();
     return module;

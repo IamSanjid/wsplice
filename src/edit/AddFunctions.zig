@@ -1,11 +1,7 @@
-//! Appends function declarations to the function section; creates the section when absent.
+//! Appends function declarations, creating the section when absent.
 //!
-//!     function ::= vec(typeidx)
-//!
-//! The new declarations are symbolic `index.Type`s, resolved against the input's type count.
-//! `.appended` type ordinals are not checked: the type section that would define them arrives with
-//! the type encoder. A function's body is the code section's business (`SetBodies`), so a plan that
-//! adds a function writes two edits, one per section.
+//! Declarations name type indices; `.appended` type ordinals are not checked here because the type
+//! section is another edit's job. A function's body is `SetBodies`' job.
 const std = @import("std");
 const Io = std.Io;
 
@@ -30,7 +26,7 @@ pub fn encode(
     writer: *Io.Writer,
     options: Options,
 ) EncodeError!void {
-    _ = plan; // declarations name types, and type indices never shift
+    _ = plan; // type indices never shift
     // First, so a broken import section is reported before anything else.
     const counts = try Counts.of(module, options);
     const old = try readOld(module, options);
@@ -64,9 +60,8 @@ fn readOld(module: *const Module, options: Options) EncodeError!Old {
     return .{ .count = iterator.count, .entries = iterator.entries.slice(module.bytes) };
 }
 
-/// The number a type index resolves to, or the out-of-range diagnostic. Only `.input` is
-/// checked: an `.appended` or `.added_import` ordinal is the plan's to hand out, and the type
-/// section is not read here.
+/// The number a type index resolves to, or the out-of-range diagnostic. Only `.input` is checked;
+/// `.appended`/`.added_import` ordinals are the plan's to hand out.
 fn checkedIndex(
     function_type: index.Type,
     counts: *const Counts,

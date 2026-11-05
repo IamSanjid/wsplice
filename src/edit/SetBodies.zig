@@ -1,12 +1,8 @@
-//! Sets function bodies: replaces the body of an existing function, or appends one for a function
-//! the plan adds.
+//! Replaces existing function bodies and appends bodies for functions the plan adds.
 //!
-//! The code section has one entry per defined function. An entry this edit does not name is copied
-//! verbatim, padded LEBs included; a named one gets a canonical size prefix, its locals follow the
-//! body's `Body.Locals` mode, and its instructions are replaced, rewritten from the input, or
-//! copied raw. Local indices are checked when the owning function's type is known. Nothing checks
-//! that the bodies match the functions the plan adds, or that an instruction type-checks: that is
-//! validation, and `wasm-validate` does it.
+//! Unnamed code entries are copied verbatim; named ones are re-encoded with a canonical size and
+//! their locals policy. Local indices are checked when the owner's parameter count is known;
+//! instruction validity is `wasm-validate`'s job.
 const std = @import("std");
 const assert = std.debug.assert;
 const Io = std.Io;
@@ -22,15 +18,14 @@ const Query = @import("../Query.zig");
 const index = @import("../index.zig");
 const code = @import("../payload/code.zig");
 
-/// A replacement body for an existing function.
+/// A replacement body for an existing function. `function` is an input index at or after the
+/// imported function count; imported functions have no code entry.
 pub const Replacement = struct {
-    /// A function index in the input module. An imported function has no body, so an index below
-    /// the imported function count is refused.
     function: u32,
     body: Body,
 };
 
-/// Replace the body of these functions, in any order.
+/// Bodies replacing input functions, in any order.
 existing: []const Replacement = &.{},
 /// Append one body per function the plan adds: `added[n]` is the body of function `.appended = n`.
 added: []const Body = &.{},
@@ -49,7 +44,7 @@ pub fn encode(
     const imported = counts.importedCount(.function);
     try check(self, imported, old.count, options);
     const query = Query.initWithCounts(module, counts);
-    const function_layout = index.Layout.of(&counts, .function, &plan.added_imports);
+    const function_layout = index.Layout.of(.function, &counts, &plan.added_imports);
 
     const count_new = std.math.cast(u32, self.added.len) orelse return error.Overflow;
     const count_total = std.math.add(u32, old.count, count_new) catch return error.Overflow;
@@ -106,9 +101,8 @@ fn readOld(module: *const Module, options: Options) EncodeError!Old {
     return .{ .count = iterator.count };
 }
 
-/// Checks every existing entry before the first byte is written. `limit` is how many function
-/// indices the input's code section can cover: with a consistent input it equals the function
-/// space's size, and with an inconsistent one it is the number that is really there.
+/// Checks every existing entry before the first byte is written. `limit` is what the input's code
+/// section can cover: the function space's size when consistent, the real entry count otherwise.
 fn check(self: *const SetBodies, imported: u32, old_count: u32, options: Options) EncodeError!void {
     const limit = std.math.add(u32, imported, old_count) catch return error.Overflow;
     for (self.existing, 0..) |*entry, i| {
@@ -157,8 +151,8 @@ fn ownerForInput(
     return .{ .emitted_function = final, .parameter_count = parameters };
 }
 
-/// The owning function and parameter count for an added function's body, when the plan supplied
-/// the type context. A body without context is still emitted; its local indices are not checked.
+/// The owner and parameter count for an added function's body, when the plan supplies the type
+/// context. A body without context is emitted, but its local indices are not checked.
 fn ownerForAdded(
     query: *const Query,
     plan: *const Plan,
